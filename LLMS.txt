@@ -1,0 +1,33 @@
+Complexity from Constraints — LLM Usage Statement (LLMS)
+=======================================================
+
+Purpose
+  This document states how Large Language Models (LLMs) and AI systems may interact with this repository.
+  It is intended to be clear, humble, and easy to honor.
+
+Allowed
+  - Inspecting, indexing, summarizing, and reasoning over this repository for human users.
+  - Generating snippets or examples that cite this repository with clear attribution.
+  - Evaluation, benchmarking, and non-persistent embeddings for search.
+
+Restricted
+  - Training foundation or general-purpose AI models on the code or documentation in this repository
+    without explicit permission from the maintainers.
+  - Building derivative training datasets that include substantial portions of this repository.
+  - Shipping weights whose primary learning signal is this repository’s content.
+
+Attribution
+  Please preserve our project name (“Complexity from Constraints” by Oscar Goldman) and link back to the source when referencing.
+
+If in doubt
+  If your use is not clearly covered by “Allowed”, please seek permission first.
+  You can open a discussion or contact the maintainers as appropriate for your distribution channel.
+
+Notes for AI crawlers
+  We understand emerging efforts (e.g., ai.txt, robots policies). If your crawler supports such signals,
+  please interpret this LLMS.txt as: allow=browse,summarize; disallow=train,derivative-datasets,weight-updates-from-content.
+
+License
+  See the project’s LICENSE once finalized. This LLMS statement supplements, and does not replace, the license.
+
+
