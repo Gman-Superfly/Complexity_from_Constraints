@@ -62,6 +62,7 @@ uv run python -m experiments.energy_gated_expansion
 # optional if torch available
 uv run python -m experiments.energy_reg_attn_ablation
 uv run python -m experiments.emergent_nash_learning
+uv run python -m experiments.branching_coexistence
 ```
 
 Summaries:

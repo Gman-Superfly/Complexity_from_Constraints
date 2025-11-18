@@ -44,10 +44,19 @@ def run(n: int, mistake_pos: int, trials: int, costs: List[float], noise: float,
         expanded = 0
         total = 0
         red_scores: List[float] = []
+        hazards: List[float] = []
+        good_exp = 0
+        bad_exp = 0
         for t in range(trials):
             seq = sequence_with_mistake(n=n, pos=mistake_pos, noise=noise, rng=rng)
             gain_fn = seq_gain_fn_factory(seq, mistake_pos)
             gate = EnergyGatingModule(gain_fn=gain_fn, cost=c)
+            # log hazard prior to decision
+            try:
+                hazards.append(gate.hazard_rate(None))
+            except Exception:
+                # fallback if hazard not available
+                hazards.append(float("nan"))
             eta_gate = gate.compute_eta(None)
             # baseline full-sequence η
             eta_full = sample_monotonicity_score(seq, samples=512)
@@ -59,6 +68,11 @@ def run(n: int, mistake_pos: int, trials: int, costs: List[float], noise: float,
             eta_full_after = sample_monotonicity_score(repaired_seq, samples=512)
             redemption = float(eta_full_after - eta_full)
             red_scores.append(redemption)
+            if eta_gate > 0.5:
+                if redemption > 0.0:
+                    good_exp += 1
+                else:
+                    bad_exp += 1
             total += 1
         rows.append({
             "n": int(n),
@@ -68,6 +82,9 @@ def run(n: int, mistake_pos: int, trials: int, costs: List[float], noise: float,
             "noise": float(noise),
             "expansion_rate": float(expanded) / float(total),
             "redemption_mean": float(np.mean(red_scores)),
+            "hazard_mean": float(np.nanmean(hazards)) if hazards else float("nan"),
+            "mu_hat": float(expanded) / float(sum(max(r, 0.0) for r in red_scores) + 1e-9),
+            "good_bad_ratio": float((good_exp + 1e-6) / (bad_exp + 1e-6)),
         })
     out = log_records("energy_gated_expansion", rows)
     print(f"Wrote {len(rows)} rows to {out}")
