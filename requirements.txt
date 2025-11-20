@@ -1,0 +1,9 @@
+polars>=1.35
+numpy>=2.3
+networkx>=3.0
+pytest>=7.0
+
+# Optional (only for attention ablation experiment)
+# torch>=2.0
+
+

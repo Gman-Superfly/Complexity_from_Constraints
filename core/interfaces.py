@@ -11,6 +11,9 @@ __all__ = [
     "OrderParameter",
     "EnergyModule",
     "EnergyCoupling",
+    "SupportsLocalEnergyGrad",
+    "SupportsCouplingGrads",
+    "WeightAdapter",
 ]
 
 OrderParameter = float
@@ -40,6 +43,44 @@ class EnergyCoupling(Protocol):
         constraints: Mapping[str, Any],
     ) -> float:
         """Energy contribution from coupling two order parameters."""
+        ...
+
+
+@runtime_checkable
+class SupportsLocalEnergyGrad(Protocol):
+    """Optional analytic derivative of local energy with respect to η."""
+
+    def d_local_energy_d_eta(self, eta: OrderParameter, constraints: Mapping[str, Any]) -> float:
+        ...
+
+
+@runtime_checkable
+class SupportsCouplingGrads(Protocol):
+    """Optional analytic partial derivatives of coupling energy w.r.t. (η_i, η_j)."""
+
+    def d_coupling_energy_d_etas(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float]:
+        ...
+
+
+@runtime_checkable
+class WeightAdapter(Protocol):
+    """Optional adapter to update term weights based on gradient norms and energy.
+    
+    Implementations may apply strategies like GradNorm/PCGrad on energy terms.
+    """
+
+    def step(
+        self,
+        term_grad_norms: Mapping[str, float],
+        energy: float,
+        current: Mapping[str, float],
+    ) -> Mapping[str, float]:
+        """Return updated weight mapping: keys like 'local:Class', 'coup:Class' -> float weight."""
         ...
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Mapping, Any, Tuple
+from typing import List, Mapping, Any, Tuple, Dict
 import math
 
 import numpy as np
@@ -68,13 +68,27 @@ def total_energy(
     """Total energy F_total = Σ F_local + Σ F_couple."""
     assert len(etas) == len(modules), "Mismatch between etas and modules"
     total = 0.0
+    # Optional term weights: {'local:ClassName': w, 'coup:ClassName': w}
+    weights: Dict[str, float] = {}
+    tw = constraints.get("term_weights", None)
+    if isinstance(tw, dict):
+        # best-effort copy of float-like values
+        for k, v in tw.items():
+            try:
+                weights[str(k)] = float(v)  # type: ignore[arg-type]
+            except Exception:
+                continue
     for m, eta in zip(modules, etas):
         f = float(m.local_energy(eta, constraints))
-        total += f
+        key = f"local:{m.__class__.__name__}"
+        w = float(weights.get(key, 1.0))
+        total += (w * f)
     for i, j, coup in couplings:
         assert 0 <= i < len(etas) and 0 <= j < len(etas), "Invalid coupling indices"
         fc = float(coup.coupling_energy(etas[i], etas[j], constraints))
-        total += fc
+        key = f"coup:{coup.__class__.__name__}"
+        w = float(weights.get(key, 1.0))
+        total += (w * fc)
     return float(total)
 
 

@@ -60,11 +60,15 @@ def run(n: int, mistake_pos: int, trials: int, costs: List[float], noise: float,
             eta_gate = gate.compute_eta(None)
             # baseline full-sequence η
             eta_full = sample_monotonicity_score(seq, samples=512)
-            # apply repair only if gate opens
+            # apply soft repair proportional to η_gate (differentiable effect)
             repaired_seq = list(seq)
-            if eta_gate > 0.5 and 1 <= mistake_pos < n:
-                repaired_seq[mistake_pos] = max(repaired_seq[mistake_pos], repaired_seq[mistake_pos - 1])
-                expanded += 1
+            if 1 <= mistake_pos < n:
+                orig = repaired_seq[mistake_pos]
+                target = max(repaired_seq[mistake_pos], repaired_seq[mistake_pos - 1])
+                blend = float(eta_gate)
+                repaired_seq[mistake_pos] = (1.0 - blend) * orig + blend * target
+                if eta_gate > 0.5:
+                    expanded += 1
             eta_full_after = sample_monotonicity_score(repaired_seq, samples=512)
             redemption = float(eta_full_after - eta_full)
             red_scores.append(redemption)

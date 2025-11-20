@@ -72,11 +72,28 @@ These are sanity checks; they do not imply state‑of‑the‑art performance. T
 - No large‑scale or long‑context evaluations yet; results are toy‑scale and illustrative.
 
 ## 9. Roadmap (Short)
-- Strengthen energies and calibrate weights; add invariants and checks.
-- Prefer analytic/autograd gradients where feasible; keep finite‑diff as fallback.
-- Integrate gating with banded architectures to make expansion rare but impactful within a single pass.
-- Extend experiments with exact baselines and ablations; add `test_prod_*` for lifecycle and event flows.
-- Improve observability (ΔF, η traces, gating rates) and small diagrams in docs.
+- P0 — Scaling core (near‑term)
+  - [ ] Replace FD‑only steps with correct analytic gradients in coordinator; remove double‑counting; add optional `SupportsLocalEnergyGrad` and `SupportsCouplingGrads` protocols; clamp \( \eta \in [0,1] \); optional damping/line‑search.
+  - [ ] Compute gradients from local terms + incident couplings via an adjacency map (neighbor‑only), add coordinate‑descent + active‑set updates to avoid full O(M·(M+E)) sweeps.
+  - [ ] Vectorized fast path for common couplings (e.g., quadratic) using NumPy scatter‑adds to reduce Python‑loop overhead.
+  - [ ] Gradient‑norm normalization/clipping across term families (locals vs couplings) to prevent “energy wars” at scale.
+  - [ ] Tests: analytic vs finite‑diff gradient parity; relaxation energy non‑increase; domain safety (no out‑of‑range η).
+
+- P1 — Production tests & observability
+  - [ ] `test_prod_*` covering composed flows (sequence + coupling + gating): energy monotonicity/plateau, no NaN etas after long runs, redemption reduces prefix loss.
+  - [ ] Term‑wise energy and gradient magnitude logging via Polars; ΔF and η traces; gating rate summaries.
+
+- P2 — Differentiable/robust gating
+  - [ ] Soft application of gating effect in `energy_gated_expansion.py` (e.g., convex blend by \( \eta_{\text{gate}} \)) to make end‑to‑end behavior smooth.
+  - [ ] Damping/asymmetry options for redemption‑style couplings; sweep coupling strengths (e.g., 0.1→10.0) and plot energy trajectories to guard against oscillations/limit cycles.
+
+- P3 — Packaging & extension hooks
+  - [ ] Add `pyproject.toml` and `CITATION.cff`; mark MIT license as done.
+  - [ ] Introduce optional `term_weights` in constraints and a lightweight `WeightAdapter` hook (`step(term_grads, metrics) -> new_weights`) to allow external meta‑training without coupling repositories.
+
+- P4 — Backend acceleration (optional, non‑blocking)
+  - [ ] Provide JAX/PyTorch backend for autograd and GPU execution for heavy modules/couplings while keeping Protocols stable.
+  - [ ] Optional sparse ops / block‑structured couplings for very large M,E.
 
 ## 10. Reproducibility (Minimal)
 - Environments via `uv`; metrics logged with Polars; deterministic seeds in experiments.

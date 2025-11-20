@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: "Complexity from Constraints"
+message: "If you use this repository in your research, please cite it as below."
+authors:
+  - name: "Oscar Goldman - Shogu research Group @ Datamutant.ai subsidiary of 温心重工業"
+version: "0.4.0"
+license: MIT
+date-released: "2025-11-20"
+repository-code: "https://github.com/Gman-Superfly/Complexity_from_Constraints"
+keywords:
+  - free energy
+  - non-local couplings
+  - active inference
+  - modular systems
+  - energy-based models
+
+

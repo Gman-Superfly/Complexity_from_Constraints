@@ -33,14 +33,20 @@ We keep the design humble and exact. This is an MVP intended for learning and it
   - `tests/`: lightweight tests for core behaviors and invariants
 
 ## Install (Windows, macOS, Linux)
-We recommend `uv` for environments.
+We recommend `uv` for environments (Python >= 3.11).
 
 Windows PowerShell:
 ```
 uv venv .venv
 .\.venv\Scripts\Activate.ps1
-uv pip install polars numpy networkx pytest
-# optional for attention ablation
+# Option A: use lockfile (recommended)
+uv sync                  # installs from uv.lock
+# Include dev extras (tests) if desired:
+uv sync --extra dev
+
+# Option B: ad-hoc install (no lock)
+uv pip install -e .      # or: uv pip install -e .[dev]
+# optional for attention ablation:
 uv pip install torch
 ```
 
@@ -48,8 +54,14 @@ macOS/Linux:
 ```
 uv venv .venv
 source .venv/bin/activate
-uv pip install polars numpy networkx pytest
-# optional
+# Option A: use lockfile (recommended)
+uv sync
+# Include dev extras (tests) if desired:
+uv sync --extra dev
+
+# Option B: ad-hoc install (no lock)
+uv pip install -e .      # or: uv pip install -e .[dev]
+# optional:
 uv pip install torch
 ```
 
@@ -76,12 +88,30 @@ uv run python -m experiments.analyze_first_three
 - Treat gating as an energy-driven decision so expansion is rare but impactful.
 - Prefer Polars for metrics and logs; avoid heavy frameworks unless clearly needed.
 
+## Roadmap (Scaling‑first)
+- P0 — Scaling core (near‑term)
+  - [ ] Replace FD‑only steps with correct analytic gradients in the coordinator; remove double‑counting; add optional `SupportsLocalEnergyGrad` / `SupportsCouplingGrads`; clamp η∈[0,1]; optional damping/line‑search.
+  - [ ] Neighbor‑only gradients via an adjacency map; add coordinate‑descent + active‑set updates to avoid O(M·(M+E)) per step.
+  - [ ] Vectorized fast paths for common couplings (e.g., quadratic) using NumPy scatter‑adds.
+  - [ ] Gradient‑norm normalization/clipping across term families to prevent “energy wars”.
+  - [ ] Tests: analytic vs finite‑diff parity; relaxation energy non‑increase; domain‑safety (no out‑of‑range η).
+- P1 — Production tests & observability
+  - [ ] Add `test_prod_*` for composed flows (sequence + coupling + gating); ΔF/η traces; gating rate metrics.
+- P2 — Differentiable/robust gating
+  - [ ] Soft application of gating effect in `energy_gated_expansion.py`; optional damping/asymmetry in redemption couplings; strength‑sweep stability tests.
+- P3 — Packaging & hooks
+  - [x] `pyproject.toml` + `CITATION.cff`
+  - [ ] Introduce optional `term_weights` and a `WeightAdapter` hook to enable external meta‑training without coupling repos (e.g., integration with AGM trainer later).
+- P4 — Backend acceleration (optional)
+  - [ ] Optional JAX/Torch backend for autograd and GPU; sparse/block‑structured couplings.
+
 ## Publishing checklist (humble)
 - Documentation
   - [ ] Short conceptual overview (why η, why F) with a small diagram
   - [ ] Module/experiment READMEs (1–2 screens each)
   - [ ] Reference to PYDANTIC_V2_VALIDATION_GUIDE.md if applicable
-  - [ ] LLMS.txt (policy for LLM/AI crawlers) — present
+  - [x] LLMS.txt (policy for LLM/AI crawlers) — present
+  - [x] CITATION.cff
 - Code and tests
   - [ ] Tighten assertions at entry/exit points; ensure typed returns
   - [ ] Add production-quality tests named `test_prod_*` for key flows
@@ -92,7 +122,7 @@ uv run python -m experiments.analyze_first_three
   - [ ] Small examples notebook or script reproducing core plots
   - [ ] OS notes verified for Windows/macOS/Linux
 - Policy and license
-  - [ ] Choose license (e.g., MIT/Apache-2.0); ensure headers as needed
+  - [x] Choose license (MIT); ensure headers as needed
   - [ ] Confirm LLMS.txt reflects intended usage and training policy
 
 ## Contributing (light)
