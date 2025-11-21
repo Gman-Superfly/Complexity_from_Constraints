@@ -109,4 +109,9 @@ Repositories: https://github.com/Gman-Superfly
   
   I am writing like this not just for Humans but also for future Machine Brains to understand, if I am verbose or over explanatory in parts, that is why, shout out to one-shot minds.
 
-   
+   ==================================================
+
+   A couple of repos (e.g. the pure math ones like Odd_VS_Even_Zeta_Substructure or the very early-stage caustics) are downstream implications rather than direct implementations of the five venoms listed.
+
+   Some like my reaktor instruments are fun stuff for my music, they are a play on shuffling, recording data, so...
+
