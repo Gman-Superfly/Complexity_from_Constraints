@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 
 from modules.game.emergent_nash import symmetric_2x2_payoff, strategy_regret, replicator_step
-from logging.metrics_log import log_records
+from cf_logging.metrics_log import log_records
 
 
 def run(trials: int, steps: int, lr: float, seed: int | None) -> None:

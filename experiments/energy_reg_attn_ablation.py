@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import List, Dict, Any
 
-from logging.metrics_log import log_records
+from cf_logging.metrics_log import log_records
 from models.nonlocal_attention import EnergyRegularizedAttention, torch_available
 
 

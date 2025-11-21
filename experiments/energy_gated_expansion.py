@@ -13,7 +13,8 @@ import numpy as np
 
 from modules.sequence.monotonic_eta import sample_monotonicity_score
 from modules.gating.energy_gating import EnergyGatingModule
-from logging.metrics_log import log_records
+from cf_logging.metrics_log import log_records
+from cf_logging.observability import GatingMetricsLogger
 
 
 def sequence_with_mistake(n: int, pos: int, noise: float, rng: np.random.Generator) -> List[float]:
@@ -37,7 +38,15 @@ def seq_gain_fn_factory(seq: List[float], repair_idx: int, samples: int = 512) -
     return gain_fn
 
 
-def run(n: int, mistake_pos: int, trials: int, costs: List[float], noise: float, seed: int | None) -> None:
+def run(
+    n: int,
+    mistake_pos: int,
+    trials: int,
+    costs: List[float],
+    noise: float,
+    seed: int | None,
+    log_gating_metrics: bool = False,
+) -> None:
     rng = np.random.default_rng(seed)
     rows: List[Dict[str, Any]] = []
     for c in costs:
@@ -47,16 +56,19 @@ def run(n: int, mistake_pos: int, trials: int, costs: List[float], noise: float,
         hazards: List[float] = []
         good_exp = 0
         bad_exp = 0
+        gating_logger = GatingMetricsLogger(run_id=f"energy_cost_{c}") if log_gating_metrics else None
         for t in range(trials):
             seq = sequence_with_mistake(n=n, pos=mistake_pos, noise=noise, rng=rng)
             gain_fn = seq_gain_fn_factory(seq, mistake_pos)
             gate = EnergyGatingModule(gain_fn=gain_fn, cost=c)
             # log hazard prior to decision
             try:
-                hazards.append(gate.hazard_rate(None))
+                hz = gate.hazard_rate(None)
+                hazards.append(hz)
             except Exception:
                 # fallback if hazard not available
-                hazards.append(float("nan"))
+                hz = float("nan")
+                hazards.append(hz)
             eta_gate = gate.compute_eta(None)
             # baseline full-sequence η
             eta_full = sample_monotonicity_score(seq, samples=512)
@@ -77,7 +89,16 @@ def run(n: int, mistake_pos: int, trials: int, costs: List[float], noise: float,
                     good_exp += 1
                 else:
                     bad_exp += 1
+            if gating_logger is not None:
+                gating_logger.record(
+                    hazard=float(hz),
+                    eta_gate=float(eta_gate),
+                    redemption=redemption,
+                    good=(redemption > 0.0),
+                )
             total += 1
+        if gating_logger is not None:
+            gating_logger.flush()
         rows.append({
             "n": int(n),
             "mistake_pos": int(mistake_pos),
@@ -102,8 +123,17 @@ def main() -> None:
     parser.add_argument("--noise", type=float, default=0.01)
     parser.add_argument("--costs", type=float, nargs="+", default=[0.0, 0.02, 0.05, 0.1, 0.2])
     parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--log_gating_metrics", action="store_true", help="Log hazard/η/redemption CSV via GatingMetricsLogger.")
     args = parser.parse_args()
-    run(n=args.n, mistake_pos=args.mistake_pos, trials=args.trials, costs=list(args.costs), noise=args.noise, seed=args.seed)
+    run(
+        n=args.n,
+        mistake_pos=args.mistake_pos,
+        trials=args.trials,
+        costs=list(args.costs),
+        noise=args.noise,
+        seed=args.seed,
+        log_gating_metrics=args.log_gating_metrics,
+    )
 
 
 if __name__ == "__main__":

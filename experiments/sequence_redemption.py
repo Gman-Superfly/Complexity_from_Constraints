@@ -11,7 +11,7 @@ from typing import List, Dict, Any
 import numpy as np
 
 from modules.sequence.monotonic_eta import sample_monotonicity_score
-from logging.metrics_log import log_records
+from cf_logging.metrics_log import log_records
 
 
 def sequence_with_mistake(n: int, pos: int, noise: float = 0.0, seed: int | None = None) -> List[float]:

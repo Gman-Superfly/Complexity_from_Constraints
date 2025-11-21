@@ -4,13 +4,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from core.coordinator import EnergyCoordinator
-from logging.metrics_log import log_records
+from cf_logging.metrics_log import log_records
 
 
 @dataclass
 class RelaxationTracker:
     """Attach to EnergyCoordinator callbacks and log energy/η traces to Polars CSV.
-    
+
     Usage:
         tracker = RelaxationTracker(name="relaxation_trace", run_id="demo")
         tracker.attach(coord)
@@ -57,5 +57,30 @@ class RelaxationTracker:
         if self.buffer:
             log_records(self.name, self.buffer)
             self.buffer.clear()
+
+
+@dataclass
+class GatingMetricsLogger:
+    """Lightweight logger for gating decisions (η_gate, hazard, redemption, etc.)."""
+
+    name: str = "gating_metrics"
+    run_id: str = "default"
+    buffer: List[Dict[str, Any]] = field(default_factory=list)
+
+    def record(self, *, hazard: float, eta_gate: float, redemption: float, good: bool) -> None:
+        self.buffer.append({
+            "run_id": self.run_id,
+            "hazard": float(hazard),
+            "eta_gate": float(eta_gate),
+            "redemption": float(redemption),
+            "is_good": bool(good),
+        })
+
+    def flush(self) -> None:
+        if not self.buffer:
+            return
+        log_records(self.name, self.buffer)
+        self.buffer.clear()
+
 
 

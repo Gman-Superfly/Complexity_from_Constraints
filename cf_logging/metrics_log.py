@@ -13,7 +13,7 @@ LOG_DIR.mkdir(exist_ok=True)
 
 def log_records(name: str, records: List[Dict[str, Any]]) -> Path:
     """Append records to a CSV file under logs/.
-    
+
     Args:
         name: Base filename without extension.
         records: List of dict rows.
@@ -37,5 +37,6 @@ def log_records(name: str, records: List[Dict[str, Any]]) -> Path:
 def log_record(name: str, record: Dict[str, Any]) -> Path:
     """Append a single record to a CSV file."""
     return log_records(name, [record])
+
 
 

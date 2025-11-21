@@ -7,7 +7,13 @@ from typing import Any, Mapping, Tuple
 
 from .interfaces import EnergyCoupling, OrderParameter, SupportsCouplingGrads
 
-__all__ = ["QuadraticCoupling", "DirectedHingeCoupling", "AsymmetricHingeCoupling", "GateBenefitCoupling"]
+__all__ = [
+    "QuadraticCoupling",
+    "DirectedHingeCoupling",
+    "AsymmetricHingeCoupling",
+    "GateBenefitCoupling",
+    "DampedGateBenefitCoupling",
+]
 
 
 @dataclass(frozen=True)
@@ -147,5 +153,68 @@ class GateBenefitCoupling(EnergyCoupling):
         gi = float(-self.weight * delta)
         gj = 0.0
         return gi, gj
+
+
+@dataclass(frozen=True)
+class DampedGateBenefitCoupling(EnergyCoupling):
+    """Gate-benefit coupling with optional damping and asymmetric scaling.
+
+    Energy: F = - w * (η_gate ** eta_power) * damping * scale(delta) * delta
+    where scale(delta) applies positive/negative multipliers before damping.
+    """
+
+    weight: float = 1.0
+    delta_key: str = "delta_eta_domain"
+    damping: float = 1.0
+    eta_power: float = 1.0
+    positive_scale: float = 1.0
+    negative_scale: float = 1.0
+
+    def _scaled_delta(self, delta: float) -> float:
+        if delta >= 0.0:
+            return self.positive_scale * delta
+        return self.negative_scale * delta
+
+    def _effective_eta(self, eta_gate: float) -> float:
+        if self.eta_power == 1.0:
+            return eta_gate
+        assert eta_gate >= 0.0, "eta must be non-negative"
+        return float(max(0.0, eta_gate) ** self.eta_power)
+
+    def coupling_energy(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> float:
+        assert self.weight >= 0.0, "weight must be non-negative"
+        assert self.damping >= 0.0, "damping must be non-negative"
+        delta = float(constraints.get(self.delta_key, 0.0))
+        scaled_delta = self._scaled_delta(delta)
+        eta_gate = float(eta_i)
+        eta_eff = self._effective_eta(eta_gate)
+        return float(-self.weight * self.damping * eta_eff * scaled_delta)
+
+    def d_coupling_energy_d_etas(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float]:
+        delta = float(constraints.get(self.delta_key, 0.0))
+        scaled_delta = self._scaled_delta(delta)
+        if scaled_delta == 0.0 or self.weight == 0.0 or self.damping == 0.0:
+            return 0.0, 0.0
+        eta_gate = float(eta_i)
+        if self.eta_power == 1.0:
+            grad = -self.weight * self.damping * scaled_delta
+        else:
+            if eta_gate <= 0.0:
+                grad = 0.0
+            else:
+                grad = -self.weight * self.damping * scaled_delta * self.eta_power * (
+                    eta_gate ** (self.eta_power - 1.0)
+                )
+        return float(grad), 0.0
 
 

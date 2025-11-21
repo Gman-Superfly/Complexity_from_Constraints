@@ -174,3 +174,10 @@ cython_debug/
 .pypirc
 
 docs/to_work_on_asap.md 
+docs/future_OG_fixes.md
+docs/fixes_theory_references.md
+docs/missing_fixes_from_literature.md
+docs/meta_learning_for_energy_landscapes.md
+docs/OG_fixes_summary.md
+docs/to_work_on_asap.md
+docs/classical_foundations_supplement.md

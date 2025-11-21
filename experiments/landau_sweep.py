@@ -11,7 +11,7 @@ from typing import List, Dict, Any
 import numpy as np
 
 from core.energy import landau_free_energy, descend_free_energy
-from logging.metrics_log import log_records
+from cf_logging.metrics_log import log_records
 
 
 def run(a_min: float, a_max: float, num: int, b: float, eta0: float, lr: float, steps: int) -> None:

@@ -4,7 +4,7 @@ import polars as pl
 
 from core.coordinator import EnergyCoordinator
 from core.couplings import QuadraticCoupling
-from logging.observability import RelaxationTracker
+from cf_logging.observability import RelaxationTracker
 from modules.gating.energy_gating import EnergyGatingModule
 
 

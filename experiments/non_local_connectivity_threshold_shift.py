@@ -10,7 +10,7 @@ from typing import List, Dict, Any
 import numpy as np
 
 from modules.connectivity.nl_threshold_shift import build_grid_bond_graph, largest_component_fraction
-from logging.metrics_log import log_records
+from cf_logging.metrics_log import log_records
 
 
 def find_threshold(n: int, ps: np.ndarray, threshold: float, shortcuts: bool, shortcut_frac: float, trials: int, seed: int | None) -> float:
