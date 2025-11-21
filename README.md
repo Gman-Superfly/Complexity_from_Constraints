@@ -31,7 +31,8 @@ We keep the design humble and exact. This is an MVP intended for learning and it
 
 ### WeightAdapter hook (meta-training)
 
-`EnergyCoordinator` exposes an optional `WeightAdapter` protocol so external trainers can tune per-term weights (GradNorm-style). Implement
+`EnergyCoordinator` exposes an optional `WeightAdapter` protocol so external trainers can tune per-term weights (GradNorm-style). 
+(fun stuff to be added here)
 ```python
 class MyAdapter:
     def step(self, term_grad_norms, energy, current):
