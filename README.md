@@ -1,6 +1,10 @@
 # Complexity from Constraints
 
-Small, composable modules coordinated by a global free-energy objective, with sparse non-local couplings that provide “future-like” corrections. Each module exposes an order parameter (η) and a local energy F(η; c). Composition = Σ F_local + Σ F_couple. The system seeks low-energy, coherent behavior without hard-coding global rules.
+**📖 MUST READ**: [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — Philosophy, motivation, and the five equations that unify all of my repos.
+
+
+## Code in this repo
+Small, composable modules coordinated by a global free-energy objective, with sparse non-local couplings that provide "future-like" corrections. Each module exposes an order parameter (η) and a local energy F(η; c). Composition = Σ F_local + Σ F_couple. The system seeks low-energy, coherent behavior without hard-coding global rules.
 
 We keep the design humble and exact. This is an MVP intended for learning and iteration.
 
@@ -105,7 +109,7 @@ uv run python -m experiments.analyze_first_three
 - P4 — Backend acceleration (optional)
   - [ ] Optional JAX/Torch backend for autograd and GPU; sparse/block‑structured couplings.
 
-## Publishing checklist (humble)
+## Checklist 
 - Documentation
   - [ ] Short conceptual overview (why η, why F) with a small diagram
   - [ ] Module/experiment READMEs (1–2 screens each)
