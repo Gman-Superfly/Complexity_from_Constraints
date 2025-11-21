@@ -6,7 +6,9 @@
 ## Code in this repo
 Small, composable modules coordinated by a global free-energy objective, with sparse non-local couplings that provide "future-like" corrections. Each module exposes an order parameter (η) and a local energy F(η; c). Composition = Σ F_local + Σ F_couple. The system seeks low-energy, coherent behavior without hard-coding global rules.
 
-We keep the design humble and exact. This is an MVP intended for learning and iteration.
+We keep the design tight and exact. This is an MVP intended for learning and iteration.
+
+contains ideas and code from other Gman-Superfly repos and Abstractions by Furlat
 
 ## Why this exists (short)
 - **Non-locality**: Distant parts can influence each other to redeem provisional mistakes.
