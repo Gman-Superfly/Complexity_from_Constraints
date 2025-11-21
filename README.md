@@ -157,42 +157,7 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 - Optional autograd backend: see `core/torch_backend.py` (install torch extra).
 - JAX backend prototype: `core/jax_backend.py` (install `[jax]` extra). Note this is an initial, lightly tested pass covering gating + quadratic couplings; future work will expand support/validation.
 
-## Roadmap (Scaling‑first)
-- P0 — Scaling core (near‑term)
-  - [ ] Replace FD‑only steps with correct analytic gradients in the coordinator; remove double‑counting; add optional `SupportsLocalEnergyGrad` / `SupportsCouplingGrads`; clamp η∈[0,1]; optional damping/line‑search.
-  - [ ] Neighbor‑only gradients via an adjacency map; add coordinate‑descent + active‑set updates to avoid O(M·(M+E)) per step.
-  - [ ] Vectorized fast paths for common couplings (e.g., quadratic) using NumPy scatter‑adds.
-  - [ ] Gradient‑norm normalization/clipping across term families to prevent “energy wars”.
-  - [ ] Tests: analytic vs finite‑diff parity; relaxation energy non‑increase; domain‑safety (no out‑of‑range η).
-- P1 — Production tests & observability
-  - [ ] Add `test_prod_*` for composed flows (sequence + coupling + gating); ΔF/η traces; gating rate metrics.
-- P2 — Differentiable/robust gating
-  - [ ] Soft application of gating effect in `energy_gated_expansion.py`; optional damping/asymmetry in redemption couplings; strength‑sweep stability tests.
-- P3 — Packaging & hooks
-  - [x] `pyproject.toml` + `CITATION.cff`
-  - [x] Introduce optional `term_weights` and a `WeightAdapter` hook (documented example above) to enable external meta-training without coupling repos.
-- P4 — Backend acceleration (optional)
-  - [x] Optional Torch backend for autograd/GPU on gating + quadratic couplings (`core/torch_backend.py`); JAX TBD.
 
-## Checklist 
-- Documentation
-  - [x] Short conceptual overview (why η, why F) with a small diagram/description
-  - [x] Module/experiment READMEs (1–2 screens each)
-  - [x] Reference to PYDANTIC_V2_VALIDATION_GUIDE.md if applicable
-  - [x] LLMS.txt (policy for LLM/AI crawlers) — present
-  - [x] CITATION.cff
-- Code and tests
-  - [x] Tighten assertions at entry/exit points; ensure typed returns (coordinator invariants, term weight checks)
-  - [x] Add production-quality tests named `test_prod_*` for key flows (`test_prod_sequence_gating_flow`, `test_prod_connectivity_gating_flow`, etc.)
-  - [x] Calibrate energy weights and add invariants for non-trivial minima (term weight floor/ceiling, invariant checks)
-  - [ ] Optional: replace finite-diff with full analytic gradients where feasible (torch backend provides autograd path for supported modules)
-- Packaging and usability
-  - [x] Minimal `pyproject.toml` for installable modules
-  - [x] Small examples script reproducing core plots (`examples/landau_plot.py`)
-  - [x] OS notes verified for Windows/macOS/Linux
-- Policy and license
-  - [x] Choose license (MIT); ensure headers as needed
-  - [x] Confirm LLMS.txt reflects intended usage and training policy
 
 ## Contributing (light)
 Please wait until we have some substance here to get our teeth into, this note might be old, contact OG on twitter.
