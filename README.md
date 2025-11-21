@@ -1,6 +1,6 @@
 # Complexity from Constraints
 
-**📖 MUST READ**: [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — Philosophy, motivation, and the five equations that unify all of my repos.
+**📖 MUST READ**: [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — Philosophy, motivation, and the five equations.
 
 
 ## Code in this repo
