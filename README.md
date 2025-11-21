@@ -10,6 +10,9 @@ We keep the design tight and exact. This is an MVP intended for learning and ite
 
 contains ideas and code from other Gman-Superfly repos and Abstractions by Furlat
 
+"When to use this framework" guide: "If you have N independent modules and want global coherence without backprop through all of them, use this. If you need differentiable end-to-end training, use standard deep learning, check the "Notes" section at the end of this document.
+
+##CODE
 ## Why this exists (short)
 - **Non-locality**: Distant parts can influence each other to redeem provisional mistakes.
 - **Free-energy lens**: A single scalar objective coordinates tiny modules without making them big.
@@ -161,6 +164,64 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 - JAX backend prototype: `core/jax_backend.py` (install `[jax]` extra). Note this is an initial, lightly tested pass covering gating + quadratic couplings; future work will expand support/validation.
 
 
+## Notes:
+Novelty vs. reinvention: Energy-based models, graphical models, and modular RL are well-studied. The sketptic view: "This is just EBMs + sparse factor graphs + active inference, rebranded." 
+What's new?... we would argue: it's the specific combination hazard-based gating + typed micro-modules + non-local couplings + explicit redemption metrics
+
+## Utility
+Where it helps:
+Composability over monoliths: The micro-module + energy coordinator pattern is a practical alternative to end-to-end deep models. For domains where interpretability and modularity matter (safety-critical systems, scientific ML, explainable AI).
+
+Non-local correction mechanisms: Redemption couplings are underexplored in mainstream ML. The gating + coupling design could be useful for new architectures for sequence modeling, retrieval-augmented generation, or multi-agent systems where "future context redeems past errors."
+
+Energy-based coordination without neural nets: Many researchers default to learned weights/attention. This framework shows that explicit energy minimization with typed protocols can achieve coherent behavior. This is valuable for hybrid systems (symbolic + subsymbolic) and for researchers who want more control than "train a bigger model."
+
+Code as pedagogy: The small, typed, tested codebase is a teaching tool. A grad student learning about Landau theory, variational methods, or active inference could run These experiments in an afternoon. 
+
+### Examples where to use (and not)
+- Use when
+  - You need small, interpretable pieces to coordinate coherently (audio agents, scientific ML, hybrid symbolic workflows, retrieval‑augmented pipelines).
+  - Cutting‑edge cases
+    - Multimodal tool‑using agents: coordinate vision/audio/LLM modules with non‑local redemption across modalities.
+    - RAG planning at document scale: later evidence redeems earlier retrieval/summary chunks; gate costly retrieval only when ΔF drops.
+    - Program synthesis/repair: non‑local constraints reward edits that improve test/contract energy; gate merges for impactful fixes.
+    - Embodied/robotic planning: sparse non‑local couplings enforce long‑horizon constraints; gates open rare action branches.
+    - Continual/active learning: dataset curation where gates accept examples that reduce global energy (curriculum/robustness).
+    - Sensor fusion: asynchronous sensors (vision/LiDAR/IMU/audio) coupled non‑locally; gates spawn/merge hypotheses adaptively.
+    - Audio agents: streaming ASR + enhancement + diarization; redemption rescoring fixes earlier segments using later context.
+  - Classical cases
+    - Graph connectivity/percolation with shortcuts; study threshold shifts under sparse non‑local structure.
+    - Scheduling/operations research: add resources/capacity only when global constraint energy decreases.
+    - Factor‑graph‑like inference with typed micro‑modules and explicit ΔF traces (message‑passing analogue).
+    - Time‑series anomaly detection: redeem or confirm early flags using non‑local future context; gate escalations.
+    - Multi‑agent games/regret dynamics: sparse couplings plus gating to model rare but decisive strategic shifts.
+
+- Not ideal when
+  - In current state the backends are MVP‑level, if You need SOTA accuracy on large benchmarks immediately please be patient, use something else or extend it yourself.
+  - You must operate at web scale without investing in analytic grads/vectorized couplings/JAX/Torch fast paths... we are still at MVP!!!
+  We working as fast as possible to make this "un Cinghialone"
+
+
+## Reactivity
+- What it means
+  - Step‑reactive: η and total energy update each accepted iteration.
+  - Decision‑reactive: gates respond instantly to net = (gain − cost) via hazard: η_gate = 1 − exp(−softplus(k·net)).
+  - Weight‑reactive: optional `auto_balance_term_weights` and `WeightAdapter` adjust per‑term weights online.
+
+- How to measure
+  - Enable ΔF/η traces with `--track_relaxation` (uses `RelaxationTracker`). Only accepted steps emit energy events.
+  - Log gating responsiveness with `--log_gating_metrics` (hazard_mean, μ̂, good_bad_ratio).
+  - Suggested KPI: “ΔF90” = steps to reach 90% of total energy drop; repo experiments typically converge in ~30–50 steps. With analytic grads + line search + vectorized quadratic, expect ~15–30.
+
+- How to increase reactivity
+  - Coordinator toggles: `use_analytic=True`, `use_vectorized_quadratic=True`, `line_search=True`, `normalize_grads=True`, optional `max_grad_norm`, `neighbor_gradients_only=True` or use `relax_etas_coordinate(...)`.
+  - Gating crispness: increase `k`, tune `cost`, and, if appropriate, reduce `gate_alpha/gate_beta` via `constraints`.
+  - Term‑weight emphasis: increase `coup:GateBenefitCoupling` (or `coup:DampedGateBenefitCoupling`) relative to `local:EnergyGatingModule` when Δη should drive openings.
+
+- Quick run (Windows PowerShell, our system setup)
+  - `uv run python -m experiments.sequence_gating_hypothesis --steps 40 --track_relaxation --log_gating_metrics`
+
+See also: `docs/speed_up_tweaks.md` for deeper performance guidance and profiling snippets. (this small note is for Datamutant devs to implement the ref'd doc might not be on git)
 
 ## Contributing (light)
 Please wait until we have some substance here to get our teeth into, this note might be old, contact OG on twitter.

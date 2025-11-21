@@ -7,6 +7,9 @@ It is simply a short note that ties together the loose threads running through a
 Everything I have released is, at the deepest level, the same five equations wearing different clothes.
 
 I did not set out to find a thread between them, this is work that sparks my interests.  
+
+The current state is more "unifying retrospective" than "predictive theory, there is much work to be done"
+
 I am obsessively trying to make hard problems easier for myself to understand,  inverse reconstruction, training loops, agents, music, manifolds, hallucinations... sometimes have solutions that feel inevitable as most physical systems do.
 A simple scalar objective plus the ability for the future to non-locally correct the past turns out to be enough. (ahem... enough for my simple brain to work on without exploding)
 
