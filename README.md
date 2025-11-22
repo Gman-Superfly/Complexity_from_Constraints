@@ -50,6 +50,34 @@ coord = EnergyCoordinator(..., weight_adapter=MyAdapter())
 ```
 Term keys follow the pattern `local:ClassName` / `coup:ClassName`.
 
+Built-in option: `GradNormWeightAdapter`
+```python
+from core.weight_adapters import GradNormWeightAdapter
+
+coord = EnergyCoordinator(
+    modules=mods,
+    couplings=coups,
+    constraints={"term_weights": {"local:EnergyGatingModule": 0.8}},
+    auto_balance_term_weights=False,  # optional heuristic stays available
+    weight_adapter=GradNormWeightAdapter(
+        target_norm=1.0,
+        alpha=1.2,
+        update_rate=0.15,
+        floor=0.2,
+        ceiling=3.0,
+    ),
+)
+```
+`GradNormWeightAdapter` lives in `core/weight_adapters.py` and keeps local/coupling gradients at comparable magnitudes by increasing weights for under-powered terms and reducing ones that dominate.
+
+Phase-adaptive option: `AGMPhaseWeightAdapter`
+```python
+from core.weight_adapters import AGMPhaseWeightAdapter
+coord = EnergyCoordinator(..., weight_adapter=AGMPhaseWeightAdapter())
+# Policy: in stable/improving regimes → gently boost couplings, soften gate local energy;
+# in unstable/slow regimes → gently tame couplings, strengthen gate local energy.
+```
+
 **What “meta-training” means here**
 - The inner loop (coordinator) relaxes η to lower the current total energy.
 - The outer loop (your adapter or another trainer) observes per-term gradient norms and total energy, then updates weights to reflect higher-level goals (e.g., GradNorm balancing, curriculum scheduling, downstream accuracy).
@@ -60,6 +88,16 @@ Term keys follow the pattern `local:ClassName` / `coup:ClassName`.
 
 - `EnergyCoordinator` now defaults to `use_analytic=True`. All shipped modules/couplings implement analytic gradients, and quadratic / hinge / gate-benefit families have vectorized paths (`use_vectorized_*`) to avoid Python loops on large graphs.
 - Adaptive coordinate descent is built in: set `adaptive_coordinate_descent=True` to warm-start with coordinate updates when ΔF stalls, then fall back to gradient steps.
+- Operator-splitting/prox mode: set `operator_splitting=True` to enable block‑prox updates (locals + incident couplings). Tunables: `prox_tau`, `prox_steps`. Quadratic/hinge use closed‑form pairwise prox; gate‑benefit uses projected update.
+- ADMM mode (experimental, quadratic focus): set `use_admm=True` with `admm_rho`, `admm_steps`, `admm_step_size`. Introduces auxiliary differences per quadratic edge and alternates s/η/u updates with a monotone acceptance guard.
+  - Hinge family is supported in ADMM via nonnegative auxiliary gaps on `β η_j − α η_i`; other nonquadratic factors (e.g., gate‑benefit) participate via their gradients in the η‑update.
+- Stability guard (optional): set `stability_guard=True` to cap step size using a conservative Gershgorin-style Lipschitz bound. Tunables: `stability_cap_fraction` (default 0.9), `log_contraction_margin=True` to record a per‑step margin; compatible with line search.
+- Coupling auto-cap: set `stability_coupling_auto_cap=True` with `stability_coupling_target` (desired Lipschitz bound). Coupling term weights are temporarily scaled so the estimated Lipschitz stays below the target; shows up in EnergyBudgetTracker logs as lower `energy:coup:*`.
+- Homotopy / continuation: set `homotopy_coupling_scale_start=<0..1>` and `homotopy_steps` to scale coupling term weights from a gentle start (e.g., 0.2) up to 1.0 over the first `homotopy_steps` iterations. Use `homotopy_term_scale_starts={"coup:GateBenefitCoupling":0.3, ...}` for per-term ramps, and `homotopy_gate_cost_scale_start` to temporarily raise/lower gate costs before settling to the target configuration.
+
+### Observability helpers
+- Per‑step relaxation traces: `RelaxationTracker(name, run_id).attach(coord)` then `flush()` after relaxation.
+- Per-step energy budget: `EnergyBudgetTracker(run_id="...").attach(coord)` logs per-term `energy:*`, `grad_norm:*`, backtracks and optional `contraction_margin` to CSV; call `flush()` after relaxation. Plot with `uv run python -m experiments.plot_energy_budget --input logs/energy_budget.csv --metric energy:local:YourModule`.
 - Torch/JAX backends support the same Landau-style modules (gating, sequence, connectivity, Nash) plus quadratic/hinge/gate-benefit couplings, so you can offload relaxation with `uv run pytest tests/test_torch_backend.py` / `tests/test_jax_backend.py` when those extras are installed.
 - For a complete performance playbook (ΔF90 benchmarks, profiler snippets, remaining ideas) see `docs/speed_up_tweaks.md`.
 
@@ -138,11 +176,12 @@ uv run python -m experiments.non_local_connectivity_threshold_shift
 uv run python -m experiments.sequence_redemption
 uv run python -m experiments.sequence_gating_hypothesis [--track_relaxation --log_gating_metrics]
 uv run python -m experiments.energy_gated_expansion [--log_gating_metrics]
+uv run python -m experiments.auto_balance_demo [--scenarios baseline gradnorm]
 # optional if torch available
 uv run python -m experiments.energy_reg_attn_ablation
 uv run python -m experiments.emergent_nash_learning
 uv run python -m experiments.branching_coexistence [--log_gating_metrics]
-uv run python -m experiments.benchmark_delta_f90 --configs default analytic vect coord adaptive --steps 60
+uv run python -m experiments.benchmark_delta_f90 --configs default analytic vect coord adaptive prox gradnorm agm --steps 60
 ```
 
 Summaries:
@@ -167,6 +206,7 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 - [docs/README_MODULES.md](docs/README_MODULES.md) — module quick reference (interfaces, invariants).
 - [docs/README_EXPERIMENTS.md](docs/README_EXPERIMENTS.md) — experiment intent, what to log, expected signals.
 - [experiments/benchmark_delta_f90.py](experiments/benchmark_delta_f90.py) — ΔF90 benchmark harness for comparing coordinator configs (analytic vs vectorized vs coordinate descent).
+  - Presets now include `prox` (operator-splitting), `gradnorm` and `agm` (weight adapters). The CSV includes per-term fields like `energy:local:...`, `energy:coup:...`, `grad_norm:local:...`, `grad_norm:coup:...`, plus `operator_splitting` and `adapter` flags for analysis.
 - [PYDANTIC_V2_VALIDATION_GUIDE.md](PYDANTIC_V2_VALIDATION_GUIDE.md) — required patterns for entity construction/validation across repos.
 - [cf_logging/observability.py](cf_logging/observability.py) — `RelaxationTracker` for ΔF/η traces and `GatingMetricsLogger` for hazard/η/redemption CSVs.
 - Optional autograd backend: see `core/torch_backend.py` (install torch extra).
@@ -182,6 +222,15 @@ We note independent, recent work that aligns with parts of this framework. We co
 
 - Dynamic Chunking for End-to-End Hierarchical Sequence Modeling (H-Net) — dynamic boundary “gating”, smoothing (soft application) and ratio-style compression targets echo our gating + gate-benefit + complexity patterns. Link: https://arxiv.org/html/2507.07955v2
 - EXPO: Stable Reinforcement Learning with Expressive Policies — base policy plus edit-selection mirrors our “provisional + redemption” coupling with explicit benefit vs cost. Link: https://arxiv.org/html/2507.07986v2
+
+### Discrete–continuous optimization bridge
+- We use hazard-based gating (η_gate = 1 − exp(−softplus(k·net))) as a smooth relaxation of discrete open/close decisions. During measurement we apply soft blending; for attribution or deployment we can apply a hard threshold (straight‑through–like), yielding a practical route to solve discrete selection with continuous optimization inside the coordinator (no REINFORCE).
+- This pattern mirrors “smoothing/STE” in dynamic chunking architectures (cf. H‑Net) and fits an operator‑splitting/proximal view: the gate is a differentiable control variable, while the final decision can be snapped to a discrete action without changing the inner energy formulation. See also “Related evidence (recent work)”. 
+
+### Architecture philosophy: dumb core, intelligent updates & events
+- The coordinator is intentionally simple: a typed, auditable projector that minimizes an explicit energy with gates/couplings. It does not “learn”; it enforces constraints.
+- The system’s intelligence lives in the updates and event‑driven coordination: redemption couplings, gating decisions, weight/adaptation policies, amortizers that propose good initial η, homotopy/stability schedules, and explicit event logs/metrics that close the loop.
+- In production, amortizers are first‑class (not optional): they propose fast, task‑aware η₀ and active sets; the coordinator then performs principled projection (prox/ADMM/line‑search) to enforce the global energy and constraints.
 
 ## Utility
 Where it helps:

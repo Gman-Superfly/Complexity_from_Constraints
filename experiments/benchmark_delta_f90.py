@@ -18,6 +18,11 @@ from modules.gating.energy_gating import EnergyGatingModule
 from core.couplings import QuadraticCoupling, GateBenefitCoupling
 from core.coordinator import EnergyCoordinator
 from cf_logging.metrics_log import log_records
+from core.weight_adapters import GradNormWeightAdapter, AGMPhaseWeightAdapter
+try:
+    from core.weight_adapters import SmallGainWeightAdapter  # type: ignore
+except Exception:
+    SmallGainWeightAdapter = None  # fallback if not present
 
 
 def make_modules_and_couplings() -> Tuple[List[Any], List[Tuple[int, int, Any]], Dict[str, Any]]:
@@ -46,9 +51,47 @@ def delta_f90(energies: List[float]) -> int:
     return len(energies)
 
 
+def _per_term_breakdown(coord: EnergyCoordinator, etas: List[float]) -> Dict[str, float]:
+    """Return per-term energy contributions and gradient norms keyed by term names."""
+    out: Dict[str, float] = {}
+    cw = coord._combined_term_weights()  # instrumentation
+    # Local energies
+    for idx, m in enumerate(coord.modules):
+        key = f"local:{m.__class__.__name__}"
+        w = float(cw.get(key, 1.0))
+        e = float(m.local_energy(float(etas[idx]), coord.constraints)) * w
+        out[f"energy:{key}"] = e
+    # Coupling energies
+    for i, j, coup in coord.couplings:
+        key = f"coup:{coup.__class__.__name__}"
+        w = float(cw.get(key, 1.0))
+        e = float(coup.coupling_energy(float(etas[i]), float(etas[j]), coord.constraints)) * w
+        out[f"energy:{key}"] = out.get(f"energy:{key}", 0.0) + e
+    # Gradient norms per term
+    norms = coord._term_grad_norms(etas)  # instrumentation
+    for k, v in norms.items():
+        out[f"grad_norm:{k}"] = float(v)
+    return out
+
+
 def run_config(name: str, coord_kwargs: Dict[str, Any], steps: int) -> Dict[str, Any]:
     mods, coups, constraints, inputs = make_modules_and_couplings()
-    coord = EnergyCoordinator(mods, coups, constraints, **coord_kwargs)
+    # Materialize adapter if requested via a sentinel in coord_kwargs
+    adapter_name = coord_kwargs.pop("_adapter", None)
+    adapter = None
+    if adapter_name == "gradnorm":
+        adapter = GradNormWeightAdapter()
+    elif adapter_name == "agm":
+        adapter = AGMPhaseWeightAdapter()
+    elif adapter_name == "smallgain" and SmallGainWeightAdapter is not None:
+        adapter = SmallGainWeightAdapter()
+        # ensure coordinator exposes details needed by the adapter
+        coord_kwargs = dict(coord_kwargs)
+        coord_kwargs["expose_lipschitz_details"] = True
+        # keep stability guard on for a meaningful contraction margin
+        coord_kwargs.setdefault("stability_guard", True)
+        coord_kwargs.setdefault("log_contraction_margin", True)
+    coord = EnergyCoordinator(mods, coups, constraints, weight_adapter=adapter, **coord_kwargs)
     etas = coord.compute_etas(inputs)
     energies: List[float] = []
     coord.on_energy_updated.append(lambda F: energies.append(F))
@@ -57,13 +100,20 @@ def run_config(name: str, coord_kwargs: Dict[str, Any], steps: int) -> Dict[str,
     duration = time.perf_counter() - start
     if not energies:
         energies = [coord.energy(etas)]
-    return {
+    row: Dict[str, Any] = {
         "config": name,
         "steps": steps,
         "wall_time_sec": duration,
         "delta_f90_steps": delta_f90(energies),
         "energy_final": energies[-1],
     }
+    # Append per-term breakdown at the end of relaxation
+    breakdown = _per_term_breakdown(coord, etas)
+    row.update(breakdown)
+    # Mark mode flags for analysis
+    row["operator_splitting"] = bool(getattr(coord, "operator_splitting", False))
+    row["adapter"] = str(adapter_name or "none")
+    return row
 
 
 PRESETS: Dict[str, Dict[str, Any]] = {
@@ -102,6 +152,47 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "adaptive_coordinate_descent": True,
         "coordinate_steps": 30,
         "line_search": True,
+    },
+    # Operator-splitting / proximal mode
+    "prox": {
+        "use_analytic": True,
+        "operator_splitting": True,
+        "prox_steps": 60,
+        "prox_tau": 0.05,
+    },
+    # Adapter comparisons (gradient-based relaxation path)
+    "gradnorm": {
+        "use_analytic": True,
+        "_adapter": "gradnorm",
+        "line_search": True,
+        "normalize_grads": True,
+    },
+    "agm": {
+        "use_analytic": True,
+        "_adapter": "agm",
+        "line_search": True,
+        "normalize_grads": True,
+    },
+    "smallgain": {
+        "use_analytic": True,
+        "_adapter": "smallgain",
+        "line_search": True,
+        "normalize_grads": True,
+        # helpful toggles
+        "use_vectorized_quadratic": True,
+        "use_vectorized_hinges": True,
+        "neighbor_gradients_only": True,
+        # stability and telemetry
+        "stability_guard": True,
+        "log_contraction_margin": True,
+        "expose_lipschitz_details": True,
+    },
+    "admm": {
+        "use_analytic": True,
+        "use_admm": True,
+        "admm_steps": 60,
+        "admm_rho": 1.0,
+        "admm_step_size": 0.05,
     },
 }
 

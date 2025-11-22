@@ -1,0 +1,5 @@
+basis,energy_final,total_backtracks,steps,eta0,split
+legendre,0.10634889440607367,42,15,0.9,train
+legendre,0.10634889440607367,42,15,0.9,test
+apc,0.3561912393164737,53,15,0.9,train
+apc,0.3561912393164737,53,15,0.9,test

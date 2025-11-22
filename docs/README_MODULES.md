@@ -2,6 +2,13 @@
 
 Short, humble summaries (≤2 screens). Every module follows the `EnergyModule` protocol (`compute_eta`, `local_energy`, optional `d_local_energy_d_eta`) and keeps η within `[0, 1]`. Couplings follow `EnergyCoupling` with optional analytic derivatives (`SupportsCouplingGrads`). Term weights can be tuned dynamically via `EnergyCoordinator` (see README meta-training section).
 
+## Weight Adapters (`core/weight_adapters.py`)
+- **What**: Implementations of the `WeightAdapter` protocol that dynamically adjust term weights during relaxation.
+- **GradNormWeightAdapter**: Equalizes gradient magnitudes across local/coupling terms to prevent "energy wars"; adjustable target norm, alpha (restoring force), update rate, floor/ceiling clamps.
+- **Use when**: Multiple energy terms with different scales compete; one term consistently dominates; you want balanced contribution from all constraint types without manual tuning.
+- **Demo**: See `experiments/auto_balance_demo.py` comparing fixed weights vs GradNorm adaptation.
+- **Integration**: Pass to `EnergyCoordinator(weight_adapter=GradNormWeightAdapter(...))` and adapter.step() runs per iteration.
+
 ## SequenceConsistencyModule (`modules/sequence/monotonic_eta.py`)
 - **What**: Sublinear monotonicity score via random pair sampling (`O(samples)`).
 - **Order parameter**: Fraction of sampled pairs that satisfy `v[i] <= v[j]`.
@@ -24,10 +31,38 @@ Short, humble summaries (≤2 screens). Every module follows the `EnergyModule` 
 - **Use when**: Expansion must be rare but impactful; log `hazard_mean`, `μ̂`, `good_bad_ratio`.
 - **Constraints**: `gate_alpha`, `gate_beta` override local coefficients for calibration (defaults from module if not set).
 
+## NashModule (`modules/game/emergent_nash.py`)
+- **What**: Game-theoretic equilibrium module using regret-based order parameter.
+- **Order parameter**: `η = 1 - normalized_regret` where regret measures deviation from best-response.
+- **Local energy**: Landau around target 1.0 (minimal regret) → `a (1-η)^2 + b (1-η)^4`.
+- **Use when**: Multi-agent games, regret dynamics, emergent Nash equilibrium experiments.
+- **Constraints**: `nash_alpha`, `nash_beta` override local coefficients; asserts ≥ 0.
+- **Extras**: Includes `symmetric_2x2_payoff`, `strategy_regret`, `replicator_step` helpers for game theory experiments.
+
 ## NonlocalAttention (`models/nonlocal_attention.py`)
 - **What**: PyTorch module that regularizes attention weights via an energy penalty.
 - **Order parameter**: Softmax attention statistics; energy discourages entropy collapse.
 - **Status**: Optional demo; requires `torch`. Keep off by default unless you need the ablation.
+
+## PolynomialEnergyModule (`modules/polynomial/polynomial_energy.py`)
+- **What**: Local energy on η using a small Legendre basis on ξ = 2η − 1 (degree ≤ 4).
+- **Order parameter**: Pass-through (`compute_eta(x) → η`), expects a float in `[0,1]`.
+- **Local energy**: `E(η) = Σ c_k φ_k(ξ)`, with basis selectable via `basis ∈ {"legendre","apc"}`:
+  - `basis="legendre"`: `φ_k = P_k(ξ)` (Legendre); analytic derivative via chain rule (`dξ/dη = 2`).
+  - `basis="apc"`: `φ_k` are APC orthonormal polynomials fitted from empirical ξ samples (Gram–Schmidt).
+- **Use when**: You want a better-conditioned alternative to monomial Landau forms (aPC/CODE-style calibration); start with Legendre (fixed) before moving to aPC (data-adaptive).
+- **Constraints**:
+  - Weights: `constraints["poly_coeffs"]` (list of `degree+1` floats)
+  - APC basis (when `basis="apc"`): `constraints["apc_basis"]` is a matrix of shape `(degree+1, degree+1)` with monomial coefficients per basis function (see `modules/polynomial/apc.py`).
+  - Even-order coefficients positive typically promote stability near boundaries.
+- **Notes**: Degree capped at 4 for simplicity and speed; future work may add aPC (orthonormalization on empirical η traces).
+
+## ModuleEntity (`core/entity_adapter.py`)
+- **What**: Lightweight wrapper that adds ECS-style identity and versioning to any `EnergyModule`.
+- **Fields**: `ecs_id` (UUID), `version` (int), `module` (wrapped EnergyModule).
+- **Methods**: `compute_eta`, `local_energy` (delegates to wrapped module), `bump_version()`, `emit(...)` for event-style hooks.
+- **Use when**: You need provenance tracking, versioning, or event emission without full Abstractions framework integration.
+- **Integration**: Pass `ModuleEntity` instances to coordinator; they satisfy the `EnergyModule` protocol.
 
 ## Common coupling helpers (`core/couplings.py`)
 - **Quadratic/hinge**: Symmetric or directed smoothness constraints between η’s.

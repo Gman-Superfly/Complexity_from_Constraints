@@ -36,6 +36,10 @@ EtaUpdateCallback = Callable[[List[OrderParameter]], None]
 EnergyUpdateCallback = Callable[[float], None]
 
 
+def _is_gate_module(module: EnergyModule) -> bool:
+    return hasattr(module, "cost") and module.__class__.__name__ == "EnergyGatingModule"
+
+
 @dataclass
 class EnergyCoordinator:
     """Energy coordinator with simple event hooks."""
@@ -64,6 +68,20 @@ class EnergyCoordinator:
     adaptive_switch_delta: float = 1e-5
     adaptive_switch_patience: int = 5
     enforce_invariants: bool = True
+    # Operator-splitting / proximal mode
+    operator_splitting: bool = False
+    prox_tau: float = 0.05
+    prox_steps: int = 50
+    # ADMM (experimental, quadratic couplings focus)
+    use_admm: bool = False
+    admm_rho: float = 1.0
+    admm_steps: int = 50
+    admm_step_size: float = 0.05
+    # Homotopy / continuation
+    homotopy_coupling_scale_start: Optional[float] = None  # scale applied to all coupling term weights
+    homotopy_term_scale_starts: Optional[Mapping[str, float]] = None  # individual term keys -> start scale
+    homotopy_gate_cost_scale_start: Optional[float] = None
+    homotopy_steps: int = 0
     # Term-weight calibration
     term_weight_floor: float = 0.0
     term_weight_ceiling: Optional[float] = None
@@ -72,6 +90,14 @@ class EnergyCoordinator:
     max_term_norm_ratio: float = 10.0
     # Optional term-weight adapter
     weight_adapter: Optional[WeightAdapter] = None
+    # Stability / small-gain guard (optional)
+    stability_guard: bool = False
+    stability_cap_fraction: float = 0.9  # cap step to this fraction of 2/L estimate
+    log_contraction_margin: bool = False
+    stability_coupling_auto_cap: bool = False
+    stability_coupling_target: Optional[float] = None  # desired max Lipschitz (if None, auto)
+    # Lipschitz/allocator details (instrumentation for adapters/telemetry)
+    expose_lipschitz_details: bool = False
 
     on_eta_updated: List[EtaUpdateCallback] = field(default_factory=list)
     on_energy_updated: List[EnergyUpdateCallback] = field(default_factory=list)
@@ -83,6 +109,13 @@ class EnergyCoordinator:
     _local_energy_buffer: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     _local_grad_buffer: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     _adaptive_switches: int = field(default=0, init=False, repr=False)
+    _total_backtracks: int = field(default=0, init=False, repr=False)
+    _last_step_backtracks: int = field(default=0, init=False, repr=False)
+    _last_contraction_margin: Optional[float] = field(default=None, init=False, repr=False)
+    _stability_coupling_scale: Optional[float] = field(default=None, init=False, repr=False)
+    _homotopy_term_scales: Optional[dict[str, float]] = field(default=None, init=False, repr=False)
+    _homotopy_gate_bases: Optional[List[float]] = field(default=None, init=False, repr=False)
+    _last_lipschitz_details: Optional[dict] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._validate_configuration()
@@ -112,6 +145,11 @@ class EnergyCoordinator:
 
     def relax_etas(self, etas0: List[OrderParameter], steps: int = 50) -> List[OrderParameter]:
         """Finite-difference gradient steps on F_total w.r.t. etas."""
+        # Optional operator-splitting path
+        if self.operator_splitting:
+            return self.relax_etas_proximal(etas0, steps=self.prox_steps, tau=self.prox_tau)
+        if self.use_admm:
+            return self.relax_etas_admm(etas0, steps=self.admm_steps, rho=self.admm_rho, step_size=self.admm_step_size)
         etas = [float(e) for e in etas0]
         if self.use_coordinate_descent:
             return self.relax_etas_coordinate(
@@ -119,6 +157,16 @@ class EnergyCoordinator:
                 steps=self.coordinate_steps,
                 active_tol=self.coordinate_active_tol,
             )
+        self._homotopy_scale = None
+        self._stability_coupling_scale = None
+        self._homotopy_term_scales = None
+        self._homotopy_gate_bases = None
+        homotopy_active = (
+            self.homotopy_coupling_scale_start is not None
+            and self.homotopy_coupling_scale_start >= 0.0
+            and self.homotopy_steps > 0
+        )
+        gate_modules = [m for m in self.modules if _is_gate_module(m)]
         stalled_steps = 0
         energy_value = self._energy_value(etas)
         prev_energy_value: Optional[float] = energy_value
@@ -130,7 +178,28 @@ class EnergyCoordinator:
             )
             energy_value = self._energy_value(etas)
             prev_energy_value = energy_value
-        for _ in range(steps):
+        for iter_idx in range(steps):
+            L_est = None
+            if homotopy_active:
+                t = min(1.0, iter_idx / float(self.homotopy_steps))
+                start = float(self.homotopy_coupling_scale_start)
+                scale = start + (1.0 - start) * t
+                self._homotopy_scale = max(0.0, scale)
+            if self.homotopy_term_scale_starts and self.homotopy_steps > 0:
+                t = min(1.0, iter_idx / float(self.homotopy_steps))
+                term_scales = {}
+                for key, start in self.homotopy_term_scale_starts.items():
+                    start = float(start)
+                    term_scales[str(key)] = max(0.0, start + (1.0 - start) * t)
+                self._homotopy_term_scales = term_scales
+            if self.homotopy_gate_cost_scale_start is not None and self.homotopy_steps > 0 and gate_modules:
+                if self._homotopy_gate_bases is None:
+                    self._homotopy_gate_bases = [float(m.cost) for m in gate_modules]
+                t = min(1.0, iter_idx / float(self.homotopy_steps))
+                start = float(self.homotopy_gate_cost_scale_start)
+                scale = max(0.0, start + (1.0 - start) * t)
+                for m, base in zip(gate_modules, self._homotopy_gate_bases):
+                    m.cost = float(base * scale)
             grads = self._grads(etas)
             # optional normalization/clipping
             if self.normalize_grads:
@@ -142,12 +211,49 @@ class EnergyCoordinator:
                 if norm > self.max_grad_norm and norm > 0.0:
                     scale = self.max_grad_norm / norm
                     grads = [g * scale for g in grads]
+            # Stability guard: cap step size if enabled
+            step_to_use = self.step_size
+            need_L = self.stability_guard or self.stability_coupling_auto_cap
+            if need_L:
+                L_est = self._estimate_lipschitz_bound(etas)
+            if self.stability_guard and L_est and L_est > 0.0 and math.isfinite(L_est):
+                cap = self.stability_cap_fraction * (2.0 / L_est)
+                if cap > 0.0:
+                    step_to_use = min(step_to_use, cap)
+                    if self.log_contraction_margin:
+                        self._last_contraction_margin = (2.0 / L_est) - step_to_use
+            elif self.stability_guard and self.log_contraction_margin:
+                self._last_contraction_margin = None
+            # Coupling auto-cap
+            coupling_scale = None
+            if self.stability_coupling_auto_cap and L_est and L_est > 0.0 and math.isfinite(L_est):
+                target = self.stability_coupling_target
+                if target is None:
+                    target = L_est
+                if target > 0.0 and L_est > 0.0:
+                    coupling_scale = min(1.0, max(0.0, target / L_est))
+                    if coupling_scale >= 0.999:
+                        coupling_scale = None
+            self._stability_coupling_scale = coupling_scale
+            # Optional: prepare Lipschitz details for allocator/telemetry
+            self._last_lipschitz_details = None
+            need_details = (
+                self.expose_lipschitz_details
+                or (self.weight_adapter is not None and any(
+                    hasattr(self.weight_adapter, attr) for attr in ("edge_costs", "row_margins", "global_margin")
+                ))
+            )
+            if need_details:
+                target_L = self.stability_coupling_target if (self.stability_coupling_target and self.stability_coupling_target > 0.0) else L_est
+                self._last_lipschitz_details = self._estimate_lipschitz_details(
+                    etas, smoothing_epsilon=max(self.grad_eps * 0.5, 1e-6), target_L=target_L
+                )
             # step
             if self.line_search:
-                etas = self._step_with_backtracking(etas, grads, self.step_size)
+                etas = self._step_with_backtracking(etas, grads, step_to_use)
             else:
                 for i in range(len(etas)):
-                    etas[i] = float(max(0.0, min(1.0, etas[i] - self.step_size * grads[i])))
+                    etas[i] = float(max(0.0, min(1.0, etas[i] - step_to_use * grads[i])))
             self._emit_eta(etas)
             energy_value = self._energy_value(etas)
             if self.adaptive_coordinate_descent and prev_energy_value is not None:
@@ -178,12 +284,249 @@ class EnergyCoordinator:
             if self.auto_balance_term_weights:
                 self._auto_balance_term_weights(term_norms)
             if self.weight_adapter is not None:
+                # If adapter supports allocator fields, inject details snapshot
+                if self._last_lipschitz_details is not None:
+                    if hasattr(self.weight_adapter, "edge_costs"):
+                        edge_costs = self._last_lipschitz_details.get("family_costs", {})
+                        try:
+                            # type: ignore[attr-defined]
+                            self.weight_adapter.edge_costs = {str(k): float(v) for k, v in edge_costs.items()}
+                        except Exception:
+                            pass
+                    if hasattr(self.weight_adapter, "row_margins"):
+                        row_margins = self._last_lipschitz_details.get("row_margins", {})
+                        try:
+                            # type: ignore[attr-defined]
+                            self.weight_adapter.row_margins = {int(k): float(v) for k, v in row_margins.items()}
+                        except Exception:
+                            pass
+                    if hasattr(self.weight_adapter, "global_margin"):
+                        gm = float(self._last_lipschitz_details.get("global_margin", 0.0))
+                        try:
+                            # type: ignore[attr-defined]
+                            self.weight_adapter.global_margin = gm
+                        except Exception:
+                            pass
                 updated = self.weight_adapter.step(term_norms, energy_value, dict(self._term_weights))
                 self._term_weights = {
                     str(k): float(v) for k, v in updated.items() if isinstance(k, str)
                 }
+        self._homotopy_scale = None
+        self._homotopy_term_scales = None
+        if self._homotopy_gate_bases is not None:
+            for m, base in zip(gate_modules, self._homotopy_gate_bases):
+                m.cost = float(base)
+        self._homotopy_gate_bases = None
+        self._stability_coupling_scale = None
         return etas
 
+    # --- Proximal / operator-splitting mode ---
+    def relax_etas_proximal(self, etas0: List[OrderParameter], steps: int = 50, tau: float = 0.05) -> List[OrderParameter]:
+        """Block-coordinate proximal updates on locals + incident couplings.
+
+        Strategy (conservative):
+          - For each iteration:
+            1) Local proximal gradient for every module (project to [0,1]).
+            2) Pairwise prox on couplings (closed-form for quadratic/hinge family; projected if needed).
+          - Emit accepted energies only; stop if energy increases.
+        """
+        assert tau > 0.0, "prox tau must be positive"
+        etas = [float(e) for e in etas0]
+        prev_energy = self._energy_value(etas)
+        self._emit_eta(etas)
+        self._emit_energy(prev_energy)
+        for _ in range(steps):
+            # 1) Local proximal gradient step
+            for idx, m in enumerate(self.modules):
+                # gradient of local (analytic if available)
+                if isinstance(m, SupportsLocalEnergyGrad):
+                    g = float(m.d_local_energy_d_eta(etas[idx], self.constraints))
+                else:
+                    base = float(m.local_energy(etas[idx], self.constraints))
+                    bumped = float(m.local_energy(min(1.0, etas[idx] + self.grad_eps), self.constraints))
+                    g = (bumped - base) / self.grad_eps
+                # apply term weight
+                w = float(self._combined_term_weights().get(f"local:{m.__class__.__name__}", 1.0))
+                # proximal gradient with projection to [0,1]
+                etas[idx] = float(max(0.0, min(1.0, etas[idx] - tau * w * g)))
+            # 2) Pairwise coupling prox/updates
+            for i, j, coup in self.couplings:
+                key = f"coup:{coup.__class__.__name__}"
+                w_c = float(self._combined_term_weights().get(key, 1.0))
+                if isinstance(coup, QuadraticCoupling):
+                    etas[i], etas[j] = self._prox_quadratic_pair(etas[i], etas[j], coup.weight * w_c, tau)
+                elif isinstance(coup, DirectedHingeCoupling):
+                    etas[i], etas[j] = self._prox_asym_hinge_pair(
+                        etas[i], etas[j], weight=coup.weight * w_c, alpha=1.0, beta=1.0, tau=tau
+                    )
+                elif isinstance(coup, AsymmetricHingeCoupling):
+                    etas[i], etas[j] = self._prox_asym_hinge_pair(
+                        etas[i], etas[j], weight=coup.weight * w_c, alpha=coup.alpha_i, beta=coup.beta_j, tau=tau
+                    )
+                elif isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
+                    # Linearized projected step on gate variable (i) only
+                    gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
+                    etas[i] = float(max(0.0, min(1.0, etas[i] - tau * w_c * float(gi))))
+                # else: no-op for unknown types
+            # Check invariants and acceptance
+            if self.enforce_invariants:
+                self._check_invariants(etas)
+            F = self._energy_value(etas)
+            if F > prev_energy + 1e-12:
+                break
+            self._emit_eta(etas)
+            self._emit_energy(F)
+            prev_energy = F
+        return etas
+
+    def _prox_quadratic_pair(self, x0: float, y0: float, weight: float, tau: float) -> tuple[float, float]:
+        """Closed-form prox for w*(x-y)^2 + (1/(2τ))||[x;y]-[x0;y0]||^2 with box projection."""
+        a = 2.0 * weight + (1.0 / tau)
+        b = -2.0 * weight
+        c = -2.0 * weight
+        d = 2.0 * weight + (1.0 / tau)
+        # Solve linear system [[a,b],[c,d]][x;y] = [x0/tau; y0/tau]
+        det = a * d - b * c
+        if det == 0.0:
+            return float(max(0.0, min(1.0, x0))), float(max(0.0, min(1.0, y0)))
+        inv_a = d / det
+        inv_b = -b / det
+        inv_c = -c / det
+        inv_d = a / det
+        rhs_x = x0 / tau
+        rhs_y = y0 / tau
+        x = inv_a * rhs_x + inv_b * rhs_y
+        y = inv_c * rhs_x + inv_d * rhs_y
+        return float(max(0.0, min(1.0, x))), float(max(0.0, min(1.0, y)))
+
+    def _prox_asym_hinge_pair(self, x0: float, y0: float, weight: float, alpha: float, beta: float, tau: float) -> tuple[float, float]:
+        """Closed-form prox for w*max(0, β y - α x)^2 + (1/(2τ))||[x;y]-[x0;y0]||^2."""
+        assert alpha >= 0.0 and beta >= 0.0
+        # Check gap at current point
+        gap0 = beta * y0 - alpha * x0
+        if gap0 <= 0.0 or weight == 0.0:
+            # No penalty region => identity prox (then project to box)
+            return float(max(0.0, min(1.0, x0))), float(max(0.0, min(1.0, y0)))
+        # Use λ_eff = 2w per gradient derivation
+        lam = 2.0 * weight
+        denom = 1.0 + tau * lam * (beta * beta + alpha * alpha)
+        g_star = (beta * y0 - alpha * x0) / denom
+        x = x0 + tau * lam * alpha * g_star
+        y = y0 - tau * lam * beta * g_star
+        return float(max(0.0, min(1.0, x))), float(max(0.0, min(1.0, y)))
+
+    # --- ADMM (experimental) for quadratic couplings ---
+    def relax_etas_admm(
+        self,
+        etas0: List[OrderParameter],
+        steps: int = 50,
+        rho: float = 1.0,
+        step_size: float = 0.05,
+    ) -> List[OrderParameter]:
+        """ADMM-like splitting primarily for quadratic couplings.
+
+        - Introduces auxiliary variables s_k for each quadratic edge k = (i,j) to represent (η_i - η_j).
+        - Alternates:
+            s-update:  minimize w*s^2 + (ρ/2)*(s - (d_ij - u))^2   (closed form)
+            η-update:  gradient step on locals + augmented term (ρ/2)*||s - (η_i-η_j) + u||^2
+            u-update:  u ← u + s - (η_i - η_j)
+        - Hinge-family couplings use s ≥ 0 on gaps g = β η_j − α η_i with the same augmented residual r = s − g + u.
+        - Other couplings (e.g., gate-benefit) contribute via their gradients during η-update.
+        """
+        assert rho > 0.0 and step_size > 0.0
+        n = len(etas0)
+        etas = [float(e) for e in etas0]
+        # Track quadratic couplings' indices for s/u
+        quad_edges: list[tuple[int, int, float, int]] = []
+        # Track hinge-family couplings (directed/asymmetric) for s/u with nonnegativity
+        hinge_edges: list[tuple[int, int, float, float, float, int]] = []  # (i,j,weight,alpha,beta,edge_idx)
+        cw = self._combined_term_weights()
+        for idx, (i, j, coup) in enumerate(self.couplings):
+            if isinstance(coup, QuadraticCoupling):
+                w = float(coup.weight) * float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
+                quad_edges.append((i, j, w, idx))
+            elif isinstance(coup, DirectedHingeCoupling):
+                w = float(coup.weight) * float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
+                hinge_edges.append((i, j, w, 1.0, 1.0, idx))
+            elif isinstance(coup, AsymmetricHingeCoupling):
+                w = float(coup.weight) * float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
+                hinge_edges.append((i, j, w, float(coup.alpha_i), float(coup.beta_j), idx))
+        m = len(quad_edges)
+        s = [0.0] * m
+        u = [0.0] * m
+        mh = len(hinge_edges)
+        sh = [0.0] * mh
+        uh = [0.0] * mh
+        prev_energy = self._energy_value(etas)
+        self._emit_eta(etas)
+        self._emit_energy(prev_energy)
+        for _ in range(steps):
+            # s-update (closed form): s = ρ*(d - u) / (ρ + 2w)
+            for k, (i, j, w, _edge_idx) in enumerate(quad_edges):
+                d_ij = float(etas[i] - etas[j])
+                denom = rho + 2.0 * w
+                s[k] = (rho * (d_ij - u[k])) / (denom if denom > 0.0 else rho)
+            # hinge s-update with nonnegativity: sh = max(0, ρ*(gap - uh)/(ρ+2w))
+            for k, (i, j, w, alpha, beta, _edge_idx) in enumerate(hinge_edges):
+                gap = beta * float(etas[j]) - alpha * float(etas[i])
+                denom = rho + 2.0 * w
+                sh_k = (rho * (gap - uh[k])) / (denom if denom > 0.0 else rho)
+                sh[k] = float(max(0.0, sh_k))
+            # η-update: gradient step using locals + augmented quadratic terms (and non-quadratic couplings)
+            grads = [0.0] * n
+            # local grads
+            for idx_m, (m_module, eta_val) in enumerate(zip(self.modules, etas)):
+                w_loc = float(cw.get(f"local:{m_module.__class__.__name__}", 1.0))
+                if isinstance(m_module, SupportsLocalEnergyGrad):
+                    grads[idx_m] += w_loc * float(m_module.d_local_energy_d_eta(float(eta_val), self.constraints))
+                else:
+                    base = float(m_module.local_energy(float(eta_val), self.constraints))
+                    bumped = float(m_module.local_energy(min(1.0, float(eta_val) + self.grad_eps), self.constraints))
+                    grads[idx_m] += w_loc * ((bumped - base) / self.grad_eps)
+            # augmented terms from quadratic edges
+            for k, (i, j, _w, _edge_idx) in enumerate(quad_edges):
+                r = s[k] - (float(etas[i]) - float(etas[j])) + u[k]
+                grads[i] += -rho * r
+                grads[j] += rho * r
+            # augmented terms from hinge edges
+            for k, (i, j, _w, alpha, beta, _edge_idx) in enumerate(hinge_edges):
+                r = sh[k] - (beta * float(etas[j]) - alpha * float(etas[i])) + uh[k]
+                # ∂r/∂η_i = +alpha, ∂r/∂η_j = -beta
+                grads[i] += rho * r * alpha
+                grads[j] += -rho * r * beta
+            # non-quadratic couplings via gradients
+            for i, j, coup in self.couplings:
+                if isinstance(coup, (QuadraticCoupling, DirectedHingeCoupling, AsymmetricHingeCoupling)):
+                    continue
+                w_c = float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
+                if isinstance(coup, SupportsCouplingGrads):
+                    gi, gj = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
+                    grads[i] += w_c * float(gi)
+                    grads[j] += w_c * float(gj)
+                else:
+                    base = float(coup.coupling_energy(etas[i], etas[j], self.constraints))
+                    bi = float(coup.coupling_energy(min(1.0, etas[i] + self.grad_eps), etas[j], self.constraints))
+                    bj = float(coup.coupling_energy(etas[i], min(1.0, etas[j] + self.grad_eps), self.constraints))
+                    grads[i] += w_c * ((bi - base) / self.grad_eps)
+                    grads[j] += w_c * ((bj - base) / self.grad_eps)
+            # gradient step + projection
+            for i in range(n):
+                etas[i] = float(max(0.0, min(1.0, float(etas[i]) - step_size * float(grads[i]))))
+            # u-update
+            for k, (i, j, _w, _edge_idx) in enumerate(quad_edges):
+                u[k] += s[k] - (float(etas[i]) - float(etas[j]))
+            for k, (i, j, _w, alpha, beta, _edge_idx) in enumerate(hinge_edges):
+                uh[k] += sh[k] - (beta * float(etas[j]) - alpha * float(etas[i]))
+            # acceptance guard
+            if self.enforce_invariants:
+                self._check_invariants(etas)
+            F = self._energy_value(etas)
+            if F > prev_energy + 1e-12:
+                break
+            self._emit_eta(etas)
+            self._emit_energy(F)
+            prev_energy = F
+        return etas
     def _finite_diff_grads(self, etas: List[OrderParameter]) -> List[float]:
         base = self._energy_value(etas)
         grads: List[float] = [0.0 for _ in etas]
@@ -532,6 +875,7 @@ class EnergyCoordinator:
         step = float(step_init)
         gvec = np.asarray(grads, dtype=float)
         g2 = float(np.dot(gvec, gvec))
+        local_bk = 0
         for _ in range(self.max_backtrack + 1):
             trial_arr = self._trial_array_for(etas)
             trial_arr -= step * gvec
@@ -539,28 +883,234 @@ class EnergyCoordinator:
             trial = trial_arr.tolist()
             F1 = self._energy_value(trial)
             if F1 <= F0 - self.armijo_c * step * g2:
+                self._last_step_backtracks = local_bk
+                self._total_backtracks += local_bk
                 return trial
             step *= self.backtrack_factor
+            local_bk += 1
         trial_arr = self._trial_array_for(etas)
         trial_arr -= step_init * gvec
         np.clip(trial_arr, 0.0, 1.0, out=trial_arr)
+        self._last_step_backtracks = local_bk
+        self._total_backtracks += local_bk
         return trial_arr.tolist()
 
     def _coordinate_backtracking(self, etas: List[OrderParameter], idx: int, grad_i: float, step_init: float) -> List[OrderParameter]:
         F0 = self._energy_value(etas)
         step = float(step_init)
         g2 = float(grad_i * grad_i)
+        local_bk = 0
         for _ in range(self.max_backtrack + 1):
             trial_arr = self._trial_array_for(etas)
             trial_arr[idx] = float(max(0.0, min(1.0, trial_arr[idx] - step * grad_i)))
             trial = trial_arr.tolist()
             F1 = self._energy_value(trial)
             if F1 <= F0 - self.armijo_c * step * g2:
+                self._last_step_backtracks = local_bk
+                self._total_backtracks += local_bk
                 return trial
             step *= self.backtrack_factor
+            local_bk += 1
         trial_arr = self._trial_array_for(etas)
         trial_arr[idx] = float(max(0.0, min(1.0, trial_arr[idx] - step_init * grad_i)))
+        self._last_step_backtracks = local_bk
+        self._total_backtracks += local_bk
         return trial_arr.tolist()
+
+    def _estimate_lipschitz_bound(self, etas: List[OrderParameter]) -> float:
+        """Conservative Gershgorin-style bound on gradient Lipschitz constant.
+
+        Approximates diagonal (local curvature) via finite differences of local gradient
+        and adds coupling curvature contributions for quadratic/hinge families.
+        """
+        n = len(etas)
+        if n == 0:
+            return 0.0
+        diag = np.zeros(n, dtype=float)
+        offsum = np.zeros(n, dtype=float)
+        eps = max(self.grad_eps * 0.5, 1e-6)
+        # Local curvature (finite-diff on local gradient)
+        for i in range(n):
+            eta_i = float(etas[i])
+            g_m = self._local_grad(i, max(0.0, min(1.0, eta_i - eps)))
+            g_p = self._local_grad(i, max(0.0, min(1.0, eta_i + eps)))
+            curv = (g_p - g_m) / (2.0 * eps)
+            if math.isfinite(curv) and curv > 0.0:
+                diag[i] += float(curv)
+        # Coupling curvature
+        for i, j, coup in self.couplings:
+            key = f"coup:{coup.__class__.__name__}"
+            w_eff = float(self._combined_term_weights().get(key, 1.0))
+            if isinstance(coup, QuadraticCoupling):
+                w = float(getattr(coup, "weight", 0.0)) * w_eff
+                diag[i] += 2.0 * w
+                diag[j] += 2.0 * w
+                offsum[i] += 2.0 * w
+                offsum[j] += 2.0 * w
+            elif isinstance(coup, DirectedHingeCoupling):
+                w = float(getattr(coup, "weight", 0.0)) * w_eff
+                gap = float(etas[j]) - float(etas[i])
+                if gap > 0.0:
+                    diag[i] += 2.0 * w
+                    diag[j] += 2.0 * w
+                    offsum[i] += 2.0 * w
+                    offsum[j] += 2.0 * w
+            elif isinstance(coup, AsymmetricHingeCoupling):
+                w = float(getattr(coup, "weight", 0.0)) * w_eff
+                alpha = float(getattr(coup, "alpha_i", 1.0))
+                beta = float(getattr(coup, "beta_j", 1.0))
+                gap = beta * float(etas[j]) - alpha * float(etas[i])
+                if gap > 0.0:
+                    diag[i] += 2.0 * w * (alpha * alpha)
+                    diag[j] += 2.0 * w * (beta * beta)
+                    offsum[i] += 2.0 * w * abs(alpha * beta)
+                    offsum[j] += 2.0 * w * abs(alpha * beta)
+            else:
+                # GateBenefit are linear (no curvature); ignore others
+                continue
+        L_est = float(np.max(diag + offsum))
+        if not math.isfinite(L_est) or L_est <= 0.0:
+            return 0.0
+        return L_est
+
+    def _estimate_lipschitz_details(
+        self,
+        etas: List[OrderParameter],
+        smoothing_epsilon: float = 1e-3,
+        target_L: Optional[float] = None,
+    ) -> dict:
+        """Return detailed Gershgorin-like bound components and family costs.
+
+        Produces:
+          - L_est: current Lipschitz estimate (float)
+          - row_sums: dict[row_index -> row_sum]
+          - row_targets: dict[row_index -> target_row_sum] (proportional scaling if target_L < L_est)
+          - row_margins: dict[row_index -> max(0, target - current)]
+          - global_margin: max(0, target_L - L_est)
+          - family_costs: dict['coup:ClassName' -> ΔL per unit relative scaling (max over rows)]
+
+        Notes:
+          - Hinge contributions near activation are smoothed with a simple linear ramp in [-ε, 0].
+          - Family cost aggregates the maximum row contribution attributable to a family; this
+            approximates impact on the max row sum that defines L_est.
+        """
+        n = len(etas)
+        if n == 0:
+            return {
+                "L_est": 0.0,
+                "row_sums": {},
+                "row_targets": {},
+                "row_margins": {},
+                "global_margin": 0.0,
+                "family_costs": {},
+            }
+        diag = np.zeros(n, dtype=float)
+        offsum = np.zeros(n, dtype=float)
+        # Per-row, per-family contributions to row sum
+        per_row_family = {}  # row -> {family_key: contrib}
+        for r in range(n):
+            per_row_family[r] = {}
+
+        def _add_row_family(row: int, fam: str, amount: float) -> None:
+            if amount == 0.0:
+                return
+            d = per_row_family[row]
+            d[fam] = float(d.get(fam, 0.0) + amount)
+
+        for i, j, coup in self.couplings:
+            key = f"coup:{coup.__class__.__name__}"
+            w_eff = float(self._combined_term_weights().get(key, 1.0))
+            if isinstance(coup, QuadraticCoupling):
+                w = float(getattr(coup, "weight", 0.0)) * w_eff
+                add = 2.0 * w
+                if add != 0.0:
+                    diag[i] += add
+                    diag[j] += add
+                    offsum[i] += add
+                    offsum[j] += add
+                    _add_row_family(i, key, add + add)  # diag+offsum contribution to row i
+                    _add_row_family(j, key, add + add)  # row j
+            elif isinstance(coup, DirectedHingeCoupling):
+                w = float(getattr(coup, "weight", 0.0)) * w_eff
+                gap = float(etas[j]) - float(etas[i])
+                # Smoothed activity in [-ε, 0] → [0,1]
+                if gap > 0.0:
+                    s = 1.0
+                elif -smoothing_epsilon < gap <= 0.0:
+                    s = (gap + smoothing_epsilon) / smoothing_epsilon
+                else:
+                    s = 0.0
+                if s > 0.0 and w != 0.0:
+                    add = 2.0 * w * s
+                    diag[i] += add
+                    diag[j] += add
+                    offsum[i] += add
+                    offsum[j] += add
+                    _add_row_family(i, key, add + add)
+                    _add_row_family(j, key, add + add)
+            elif isinstance(coup, AsymmetricHingeCoupling):
+                w = float(getattr(coup, "weight", 0.0)) * w_eff
+                alpha = float(getattr(coup, "alpha_i", 1.0))
+                beta = float(getattr(coup, "beta_j", 1.0))
+                gap = beta * float(etas[j]) - alpha * float(etas[i])
+                if gap > 0.0:
+                    s = 1.0
+                elif -smoothing_epsilon < gap <= 0.0:
+                    s = (gap + smoothing_epsilon) / smoothing_epsilon
+                else:
+                    s = 0.0
+                if s > 0.0 and w != 0.0:
+                    add_i = 2.0 * w * (alpha * alpha) * s
+                    add_j = 2.0 * w * (beta * beta) * s
+                    add_off = 2.0 * w * abs(alpha * beta) * s
+                    diag[i] += add_i
+                    diag[j] += add_j
+                    offsum[i] += add_off
+                    offsum[j] += add_off
+                    _add_row_family(i, key, add_i + add_off)
+                    _add_row_family(j, key, add_j + add_off)
+            else:
+                # GateBenefit (linear) and others: no curvature
+                continue
+
+        row_sums = (diag + offsum)
+        L_est = float(np.max(row_sums)) if row_sums.size > 0 else 0.0
+        # Targets and margins
+        if not target_L or not math.isfinite(target_L) or target_L <= 0.0:
+            target_L = L_est
+        row_targets = {}
+        row_margins = {}
+        if L_est > 0.0 and target_L < L_est:
+            scale = target_L / L_est
+            for r in range(n):
+                target_row = float(row_sums[r] * scale)
+                row_targets[r] = target_row
+                row_margins[r] = max(0.0, target_row - float(row_sums[r]))
+        else:
+            for r in range(n):
+                row_targets[r] = float(row_sums[r])
+                row_margins[r] = 0.0
+        global_margin = max(0.0, float(target_L - L_est))
+
+        # Family costs: max row contribution for each family
+        family_costs: dict[str, float] = {}
+        for r, fam_map in per_row_family.items():
+            for fam, amount in fam_map.items():
+                current = family_costs.get(fam, 0.0)
+                if amount > current:
+                    family_costs[fam] = float(amount)
+
+        # Build compact row_sums dict
+        row_sums_dict = {i: float(row_sums[i]) for i in range(n)}
+
+        return {
+            "L_est": L_est,
+            "row_sums": row_sums_dict,
+            "row_targets": row_targets,
+            "row_margins": row_margins,
+            "global_margin": global_margin,
+            "family_costs": family_costs,
+        }
 
     def _emit_eta(self, etas: List[OrderParameter]) -> None:
         for cb in self.on_eta_updated:
@@ -644,6 +1194,9 @@ class EnergyCoordinator:
                     continue
         if self._term_weights:
             base_tw.update({str(k): float(v) for k, v in self._term_weights.items()})
+        homotopy_scale = getattr(self, "_homotopy_scale", None)
+        term_scales = getattr(self, "_homotopy_term_scales", None)
+        coupling_scale = getattr(self, "_stability_coupling_scale", None)
         floor = float(self.term_weight_floor)
         ceiling = None if self.term_weight_ceiling is None else float(self.term_weight_ceiling)
         if floor < 0.0:
@@ -653,6 +1206,12 @@ class EnergyCoordinator:
         calibrated: dict[str, float] = {}
         for key, value in base_tw.items():
             v = float(value)
+            if homotopy_scale is not None and key.startswith("coup:"):
+                v *= homotopy_scale
+            if term_scales and key in term_scales:
+                v *= float(term_scales[key])
+            if coupling_scale is not None and key.startswith("coup:"):
+                v *= coupling_scale
             if floor:
                 v = max(v, floor)
             if ceiling is not None:
