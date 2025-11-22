@@ -16,7 +16,7 @@ import numpy as np
 from cf_logging.metrics_log import log_records
 from core.coordinator import EnergyCoordinator
 from core.couplings import GateBenefitCoupling, QuadraticCoupling
-from core.weight_adapters import GradNormWeightAdapter
+from core.weight_adapters import GradNormWeightAdapter, GSPOTokenWeightAdapter
 from modules.gating.energy_gating import EnergyGatingModule
 from modules.sequence.monotonic_eta import SequenceConsistencyModule
 
@@ -24,7 +24,7 @@ from modules.sequence.monotonic_eta import SequenceConsistencyModule
 @dataclass
 class ScenarioConfig:
     label: str
-    use_adapter: bool
+    adapter_kind: str | None
 
 
 def make_sequence(seed: int, noise: float) -> List[float]:
@@ -48,7 +48,7 @@ def evaluate_redemption(seq: List[float]) -> Tuple[List[float], float]:
     return repaired, delta
 
 
-def build_coordinator(use_adapter: bool, delta_eta: float, base_weights: Dict[str, float]) -> EnergyCoordinator:
+def build_coordinator(adapter_kind: str | None, delta_eta: float, base_weights: Dict[str, float]) -> EnergyCoordinator:
     seq_module = SequenceConsistencyModule(samples=512)
     gate_module = EnergyGatingModule(
         gain_fn=lambda _x, d=delta_eta: d,
@@ -63,7 +63,24 @@ def build_coordinator(use_adapter: bool, delta_eta: float, base_weights: Dict[st
         (1, 0, GateBenefitCoupling(weight=1.2, delta_key="delta_eta_domain")),
         (0, 1, QuadraticCoupling(weight=0.3)),
     ]
-    adapter = GradNormWeightAdapter(target_norm=1.0, alpha=1.2, update_rate=0.2) if use_adapter else None
+    adapter = None
+    if adapter_kind == "gradnorm":
+        adapter = GradNormWeightAdapter(target_norm=1.0, alpha=1.2, update_rate=0.2)
+    elif adapter_kind == "gspo":
+        adapter = GSPOTokenWeightAdapter(
+            target_norm=1.0,
+            floor=0.1,
+            ceiling=3.0,
+            num_buckets=12,
+            group_size=4,
+            batch_size=2,
+            hidden_size=48,
+            apply_rate=0.4,
+            use_token_level=True,
+            reference_sync_interval=5,
+        )
+    else:
+        adapter = None
     return EnergyCoordinator(
         modules=modules,
         couplings=couplings,
@@ -111,7 +128,7 @@ def run_scenario(
     seed: int,
 ) -> List[Dict[str, Any]]:
     repaired, delta_eta = evaluate_redemption(seq)
-    coord = build_coordinator(config.use_adapter, delta_eta, base_weights)
+    coord = build_coordinator(config.adapter_kind, delta_eta, base_weights)
     history: List[Dict[str, Any]] = []
     attach_history(coord, config.label, history)
     inputs = [seq, None]
@@ -144,7 +161,7 @@ def main() -> None:
         "--scenarios",
         nargs="*",
         default=["baseline", "gradnorm"],
-        help="Scenarios to run: choose from {baseline, gradnorm}.",
+        help="Scenarios to run: choose from {baseline, gradnorm, gspo}.",
     )
     args = parser.parse_args()
 
@@ -156,8 +173,9 @@ def main() -> None:
         "coup:QuadraticCoupling": 0.4,
     }
     options = {
-        "baseline": ScenarioConfig(label="baseline", use_adapter=False),
-        "gradnorm": ScenarioConfig(label="gradnorm", use_adapter=True),
+        "baseline": ScenarioConfig(label="baseline", adapter_kind=None),
+        "gradnorm": ScenarioConfig(label="gradnorm", adapter_kind="gradnorm"),
+        "gspo": ScenarioConfig(label="gspo", adapter_kind="gspo"),
     }
     histories: List[Dict[str, Any]] = []
     for name in args.scenarios:

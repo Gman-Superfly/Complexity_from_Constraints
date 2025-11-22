@@ -13,6 +13,7 @@ __all__ = [
     "landau_free_energy",
     "descend_free_energy",
     "total_energy",
+    "project_noise_orthogonal",
 ]
 
 
@@ -90,5 +91,34 @@ def total_energy(
         w = float(weights.get(key, 1.0))
         total += (w * fc)
     return float(total)
+
+
+def project_noise_orthogonal(
+    noise: np.ndarray,
+    grad: np.ndarray,
+    eps: float = 1e-8
+) -> np.ndarray:
+    """Project noise vector onto the subspace orthogonal to the gradient.
+    
+    z_orth = z - (z · g) * g / ||g||²
+    
+    This ensures exploration happens along the level sets of the energy function
+    (iso-energy contours), avoiding ascent/descent directions.
+    """
+    # Compute gradient norm squared
+    grad_norm_sq = np.sum(grad * grad)
+    
+    if grad_norm_sq < eps:
+        # Gradient is zero (at min/max/saddle) => all directions are valid
+        return noise
+        
+    # Compute projection scalar: (z · g) / ||g||²
+    projection_scalar = np.sum(noise * grad) / grad_norm_sq
+    
+    # Subtract component parallel to gradient
+    noise_orth = noise - projection_scalar * grad
+    
+    return noise_orth
+
 
 

@@ -70,6 +70,32 @@ coord = EnergyCoordinator(
 ```
 `GradNormWeightAdapter` lives in `core/weight_adapters.py` and keeps local/coupling gradients at comparable magnitudes by increasing weights for under-powered terms and reducing ones that dominate.
 
+GSPO-token option (global stability + local advantages):
+```python
+from core.weight_adapters import GSPOTokenWeightAdapter
+
+coord = EnergyCoordinator(
+    modules=mods,
+    couplings=coups,
+    constraints={"term_weights": {"local:EnergyGatingModule": 0.8}},
+    weight_adapter=GSPOTokenWeightAdapter(
+        target_norm=1.0,
+        num_buckets=12,
+        group_size=4,          # capacity/variance knob (sequence-level sampling)
+        batch_size=2,          # outer-loop batch for prompts
+        hidden_size=64,        # 2-10 terms; raise to 128-256 for 10-20+ terms
+        update_every_n_steps=4,# throttle RL updates in long runs (decode-only when skipped)
+        ema_reference_alpha=0.99, # EMA sync reference toward policy each update
+        use_token_level=True,
+        enable_throttling=True,    # set False to train every step regardless of update_every_n_steps
+        logging_callback=lambda m: print("gspo metrics:", m), # optional dashboard hook
+    ),
+)
+```
+`GSPOTokenWeightAdapter` wraps `core/gspo_token_vectorized.py` so the coordinator can learn term weights via the GSPO-token objective described in Zheng et al. (2025). Gradient ratios become prompts, candidate weight sequences become responses, and the reward is the redemption-style improvement toward balanced norms. Requires the `torch` extra.
+
+**Performance note**: `GSPOTokenWeightAdapter` runs a mini RL training step per coordinator relaxation (5-20x slower than `GradNormWeightAdapter`). Intended for outer-loop meta-training (30-100 steps) or weight search sweeps, not tight inner loops with 1000s of steps. The default `hidden_size=64` GRU supports 2-10 term families; for 10-20+ terms, increase to 128-256 or see P4 in `docs/fixes_and__related_todos.md` for scaling plans.
+
 Phase-adaptive option: `AGMPhaseWeightAdapter`
 ```python
 from core.weight_adapters import AGMPhaseWeightAdapter
@@ -83,6 +109,41 @@ coord = EnergyCoordinator(..., weight_adapter=AGMPhaseWeightAdapter())
 - The outer loop (your adapter or another trainer) observes per-term gradient norms and total energy, then updates weights to reflect higher-level goals (e.g., GradNorm balancing, curriculum scheduling, downstream accuracy).
 - This decouples modeling from tuning: instead of hard-coding all λ’s, you can learn them online, integrate with other optimizers, or plug into a broader training regimen (AGM trainer, reinforcement learning, etc.).
 - Auto-balancing (`auto_balance_term_weights`) is a simple built-in heuristic; `WeightAdapter` lets you replace it with something principled or domain-specific when needed.
+- When running multi-module experiments (e.g., `sequence_gating_hypothesis.py`, `energy_gated_expansion.py`, or bespoke coordinator flows), you can swap in any `WeightAdapter` to collect redemption metrics at scale. For example:
+  - Baseline: `weight_adapter=None`
+  - GradNorm: `weight_adapter=GradNormWeightAdapter(...)`
+  - GSPO-token: `weight_adapter=GSPOTokenWeightAdapter(...)` to tie sparse redemption signals directly into per-term weights via GSPO-token clipping.
+  - Document runs by noting the adapter used and logging ΔF plus redemption statistics (see `docs/README_EXPERIMENTS.md` for scenario guidance).
+
+### Structure-Preserving Noise (Orthogonal Exploration)
+`EnergyCoordinator` supports exploration noise that is projected onto the null space of the gradient, so it does not increase energy to first order (explores along level sets). This is enabled by default but ships with a conservative default magnitude of `0.0` to preserve determinism unless explicitly activated.
+
+Example:
+```python
+coord = EnergyCoordinator(
+    modules=mods,
+    couplings=coups,
+    constraints={},
+    enable_orthogonal_noise=True,  # default
+    noise_magnitude=1e-2,          # activate exploration
+    noise_schedule_decay=0.99       # optional exponential decay
+)
+```
+Notes:
+- Safe-by-construction: noise is orthogonal to ∇F at each step.
+- Keep `noise_magnitude=0.0` for reproducible baselines; set > 0 for search/robustness runs.
+- See `tests/test_orthogonal_noise.py` for math checks and integration behavior.
+
+#### Normalized Dynamics: why orthogonal (tangent-plane) noise
+Short answer: In Normalized Dynamics, the update uses the unit gradient direction. The gradient defines the normal to the energy level set, so the orthogonal complement is the tangent space. Injecting noise in that tangent space is structure‑preserving: it explores along the level set and doesn’t raise energy to first order. That’s the geometric reason a normalized, direction‑only flow naturally pairs with orthogonal (tangent‑plane) noise.
+
+#### When to turn it up (signals)
+- Gradient rotation: large angle between successive gradients (curved valleys).
+- Stall vs first‑order model: observed ΔF much smaller than α‖g‖ under normalized step.
+- Backtracks / low contraction margin: line search repeatedly trims steps, or stability margin is tight.
+- Flat‑but‑anisotropic: very small ‖g‖ but high anisotropy proxy (e.g., gradient variance).
+
+See also: `core/coordinator.py` (enable_orthogonal_noise, noise_magnitude), `tests/test_orthogonal_noise.py`, and `docs/meta_learning_for_energy_landscapes.md` (Normalized Dynamics geometric trigger).
 
 ### Gradient + backend fast paths
 
@@ -120,6 +181,7 @@ coord = EnergyCoordinator(..., weight_adapter=AGMPhaseWeightAdapter())
   - `modules/connectivity/nl_threshold_shift.py`: connectivity η on grid graphs
   - `modules/gating/energy_gating.py`: energy-gated expansion (rare but impactful decisions)
   - `models/nonlocal_attention.py`: energy-regularized attention (optional, PyTorch)
+- `core/gspo_token_vectorized.py`: self-contained GSPO / GSPO-token trainer (sequence-level and token-level objectives per Zheng et al. 2025) for reinforcement-style order-parameter updates.
 - Experiments
   - `experiments/landau_sweep.py`: disorder→order sweep on parameter a
   - `experiments/non_local_connectivity_threshold_shift.py`: shifted connectivity threshold via non-local shortcuts
@@ -220,8 +282,9 @@ What's new?... we would argue: it's the specific combination hazard-based gating
 ### Related evidence (recent work)
 We note independent, recent work that aligns with parts of this framework. We converged on similar ideas separately; we cite these as related evidence without claiming priority:
 
-- Dynamic Chunking for End-to-End Hierarchical Sequence Modeling (H-Net) — dynamic boundary “gating”, smoothing (soft application) and ratio-style compression targets echo our gating + gate-benefit + complexity patterns. Link: https://arxiv.org/html/2507.07955v2
-- EXPO: Stable Reinforcement Learning with Expressive Policies — base policy plus edit-selection mirrors our “provisional + redemption” coupling with explicit benefit vs cost. Link: https://arxiv.org/html/2507.07986v2
+- **Data-Driven Ginzburg-Landau ROMs** (Williams et al., 2024): Validates the use of **Landau order parameters** and **SINDy-discovered sparse dynamics** for modeling oscillatory instabilities (vortex shedding). Their findings—that complex high-order terms vanish under sparsity, leaving a core Landau-Ginzburg structure—strongly support our minimalist "quadratic/quartic + sparse coupling" design. Link: https://arxiv.org/html/2411.08277v1
+- **Dynamic Chunking** (H-Net): Dynamic boundary “gating”, smoothing (soft application) and ratio-style compression targets echo our gating + gate-benefit + complexity patterns. Link: https://arxiv.org/html/2507.07955v2
+- **EXPO**: Stable Reinforcement Learning with Expressive Policies — base policy plus edit-selection mirrors our “provisional + redemption” coupling with explicit benefit vs cost. Link: https://arxiv.org/html/2507.07986v2
 
 ### Discrete–continuous optimization bridge
 - We use hazard-based gating (η_gate = 1 − exp(−softplus(k·net))) as a smooth relaxation of discrete open/close decisions. During measurement we apply soft blending; for attribution or deployment we can apply a hard threshold (straight‑through–like), yielding a practical route to solve discrete selection with continuous optimization inside the coordinator (no REINFORCE).

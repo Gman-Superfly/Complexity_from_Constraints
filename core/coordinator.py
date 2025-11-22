@@ -30,7 +30,7 @@ from .couplings import (
     GateBenefitCoupling,
     DampedGateBenefitCoupling,
 )
-from .energy import total_energy
+from .energy import total_energy, project_noise_orthogonal
 
 EtaUpdateCallback = Callable[[List[OrderParameter]], None]
 EnergyUpdateCallback = Callable[[float], None]
@@ -98,6 +98,11 @@ class EnergyCoordinator:
     stability_coupling_target: Optional[float] = None  # desired max Lipschitz (if None, auto)
     # Lipschitz/allocator details (instrumentation for adapters/telemetry)
     expose_lipschitz_details: bool = False
+    # Noise / Exploration controls
+    enable_orthogonal_noise: bool = True  # Inject noise orthogonal to gradient (structure-preserving)
+    # Note: default magnitude is 0.0 to preserve determinism unless explicitly enabled in experiments.
+    noise_magnitude: float = 0.0
+    noise_schedule_decay: float = 0.99  # Simple exponential decay for noise magnitude
 
     on_eta_updated: List[EtaUpdateCallback] = field(default_factory=list)
     on_energy_updated: List[EnergyUpdateCallback] = field(default_factory=list)
@@ -224,6 +229,52 @@ class EnergyCoordinator:
                         self._last_contraction_margin = (2.0 / L_est) - step_to_use
             elif self.stability_guard and self.log_contraction_margin:
                 self._last_contraction_margin = None
+            
+            # Inject orthogonal noise if enabled (structure-preserving exploration)
+            grad_vector = np.array(grads, dtype=float)
+            noise_vector = np.zeros_like(grad_vector)
+            if self.enable_orthogonal_noise and self.noise_magnitude > 1e-9:
+                # Decay magnitude
+                current_noise_mag = self.noise_magnitude * (self.noise_schedule_decay ** iter_idx)
+                if current_noise_mag > 1e-9:
+                    # Generate raw noise
+                    raw_noise = np.random.normal(0, 1, size=grad_vector.shape)
+                    # Project onto null space of gradient (level set exploration)
+                    noise_vector = project_noise_orthogonal(raw_noise, grad_vector)
+                    # Scale
+                    noise_norm = np.linalg.norm(noise_vector)
+                    if noise_norm > 1e-9:
+                        noise_vector = noise_vector * (current_noise_mag / noise_norm)
+            
+            # step
+            if self.line_search:
+                # Line search applies to the gradient direction
+                # Noise is added *after* the descent step decision (Langevin-style) or *to* the direction?
+                # Standard practice: add noise to the update. 
+                # But line search needs a direction. Let's define direction d = -grad + noise
+                # Then line search along d.
+                direction = -grad_vector
+                # If noise enabled, perturb the search direction
+                if self.enable_orthogonal_noise:
+                     # Orthogonal noise doesn't affect dF/dalpha at alpha=0 (by definition dF/deta * noise = 0)
+                     # So it preserves the descent property locally!
+                     direction = direction + noise_vector
+                
+                # _step_with_backtracking expects grads, but we want to move in `direction`.
+                # The current helper assumes direction = -grads. We need to patch it or just apply update manually if noise is on.
+                # For safety/simplicity in this "nugget" phase: if noise is on, skip line search or force step.
+                # BETTER: Just add noise to the etas *after* the gradient step? 
+                # No, Langevin adds it to the update.
+                # Orthogonal noise is safe because grad dot noise = 0.
+                # So F(eta - eps*grad + sigma*noise) approx F(eta) - eps*|grad|^2 + 0 (first order)
+                # Descent is preserved.
+                
+                # Let's modify the update logic below to support explicit direction.
+                # For now, to keep diff small: if noise is active, we'll bypass the standard line search 
+                # or just add the noise to the final update if using fixed step.
+                # If line search is on, we really should search along -g + noise.
+                pass # Logic continues below
+
             # Coupling auto-cap
             coupling_scale = None
             if self.stability_coupling_auto_cap and L_est and L_est > 0.0 and math.isfinite(L_est):
@@ -250,10 +301,26 @@ class EnergyCoordinator:
                 )
             # step
             if self.line_search:
+                # Standard Armijo along -grad direction
+                # NOTE: If orthogonal noise is enabled, we currently apply it *after* or ignore it in line search.
+                # For strict correctness, line search should support custom directions.
+                # MVP: If noise is ON, we skip line search or apply noise separately?
+                # Decision: Apply line search to the gradient part, then add noise.
+                # This is "Split Langevin": deterministic descent + stochastic diffusion.
                 etas = self._step_with_backtracking(etas, grads, step_to_use)
+                if self.enable_orthogonal_noise and np.any(noise_vector):
+                    # Add noise (orthogonal to gradient, so doesn't fight the descent step to first order)
+                    for i in range(len(etas)):
+                        etas[i] = float(max(0.0, min(1.0, etas[i] + noise_vector[i])))
             else:
                 for i in range(len(etas)):
-                    etas[i] = float(max(0.0, min(1.0, etas[i] - step_to_use * grads[i])))
+                    # Update: eta - step*grad + noise
+                    # noise_vector is already scaled by noise_magnitude
+                    update = -step_to_use * grads[i]
+                    if self.enable_orthogonal_noise:
+                        update += noise_vector[i]
+                    etas[i] = float(max(0.0, min(1.0, etas[i] + update)))
+            
             self._emit_eta(etas)
             energy_value = self._energy_value(etas)
             if self.adaptive_coordinate_descent and prev_energy_value is not None:

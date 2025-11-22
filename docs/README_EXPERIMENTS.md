@@ -21,16 +21,18 @@ Each experiment is ≤2 screens, deterministic seeds, and logs via `cf_logging.m
 - **Goal**: Full coordinator + gate hypothesis test (sequence module + gate-benefit coupling).
 - **Metrics**: `eta_before`, `eta_after`, `eta_gate_final`, `energy_before`, `energy_after`, `redemption`.
 - **Observability**: `--track_relaxation` enables `RelaxationTracker`; `--log_gating_metrics` writes hazard/η/redemption CSVs.
+- **Adapters**: To gather redemption metrics at scale, run multiple passes with different `WeightAdapter`s (`None`, `GradNormWeightAdapter`, `GSPOTokenWeightAdapter`). Annotate logs (e.g., `run_id=sequence_gating_gspo`) so downstream analysis can compare redemption efficiency by adapter choice.
 
 ## `energy_gated_expansion.py`
 - **Goal**: Calibrate hazard-based gating (rare but impactful expansion).
 - **Metrics**: `expansion_rate`, `redemption_mean`, `hazard_mean`, `mu_hat`, `good_bad_ratio`.
 - **Soft effect**: Repairs blend by `η_gate`; expansions counted when `η_gate > 0.5`.
 - **Observability**: `--log_gating_metrics` enables `GatingMetricsLogger` CSV output (hazard/η/redemption). No coordinator here, so `RelaxationTracker` is not used.
+- **Adapters**: When wrapping the scenario in `EnergyCoordinator`, optionally enable the same adapter sweep as above to study how GSPO-token vs GradNorm affects expansion rate vs redemption gain.
 
 ## `auto_balance_demo.py`
 - **Goal**: Show how `GradNormWeightAdapter` keeps local/coupling term gradients balanced.
-- **Scenarios**: `baseline` (fixed weights) vs `gradnorm` (adapter enabled); run both by default.
+- **Scenarios**: `baseline` (fixed weights), `gradnorm` (GradNorm adapter), `gspo` (GSPO-token adapter that drives weights via `core/gspo_token_vectorized.py`; requires the `torch` extra).
 - **Metrics**: Per-step `norm:<term>` and `weight:<term>` plus energy readings, logged via `cf_logging` to `logs/auto_balance_demo.csv`.
 - **Observability**: Uses coordinator hooks to record term gradient norms/weights every step; inspect CSV to verify convergence toward target norm.
 - **Usage**: `uv run python -m experiments.auto_balance_demo --steps 40 --scenarios baseline gradnorm`
