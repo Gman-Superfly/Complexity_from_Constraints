@@ -3,6 +3,11 @@
 Given sample points ξ_k, constructs an approximately orthonormal basis
 {φ_0, ..., φ_d} expressed in the monomial basis {1, ξ, ξ^2, ...}.
 
+References:
+    - Oladyshkin, S., & Nowak, W. (2012). Data-driven uncertainty quantification
+      using the arbitrary polynomial chaos expansion. Reliability Engineering & System Safety.
+    - Wildt, N., et al. (2025). CODE: A global approach to ODE dynamics learning. arXiv:2511.15619.
+
 Usage:
     B = compute_apc_basis(xi_samples, degree=4)
 where B has shape (degree+1, degree+1) and each row contains coefficients for φ_n:

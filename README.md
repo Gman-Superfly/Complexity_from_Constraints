@@ -227,6 +227,13 @@ We note independent, recent work that aligns with parts of this framework. We co
 - We use hazard-based gating (η_gate = 1 − exp(−softplus(k·net))) as a smooth relaxation of discrete open/close decisions. During measurement we apply soft blending; for attribution or deployment we can apply a hard threshold (straight‑through–like), yielding a practical route to solve discrete selection with continuous optimization inside the coordinator (no REINFORCE).
 - This pattern mirrors “smoothing/STE” in dynamic chunking architectures (cf. H‑Net) and fits an operator‑splitting/proximal view: the gate is a differentiable control variable, while the final decision can be snapped to a discrete action without changing the inner energy formulation. See also “Related evidence (recent work)”. 
 
+### Stability "Nugget": Orthonormal Polynomials (aPC / CODE)
+Standard energy functions on $\eta \in [0,1]$ (using monomials $1, \eta, \eta^2...$) are often ill-conditioned, leading to optimization instability ("energy wars").
+- **The Fix**: Map $\eta \to \xi = 2\eta - 1$ and use an **orthonormal polynomial basis** (Legendre for uniform, Arbitrary Polynomial Chaos for data-driven distributions).
+- **Impact**: This diagonalizes the Hessian, smoothing the landscape and drastically reducing backtracks.
+- **Reference**: Wildt, N., et al. (2025). "CODE: A global approach to ODE dynamics learning." arXiv:2511.15619.
+- **Implementation**: See `modules/polynomial/apc.py` and `modules/polynomial/polynomial_energy.py`.
+
 ### Architecture philosophy: dumb core, intelligent updates & events
 - The coordinator is intentionally simple: a typed, auditable projector that minimizes an explicit energy with gates/couplings. It does not “learn”; it enforces constraints.
 - The system’s intelligence lives in the updates and event‑driven coordination: redemption couplings, gating decisions, weight/adaptation policies, amortizers that propose good initial η, homotopy/stability schedules, and explicit event logs/metrics that close the loop.

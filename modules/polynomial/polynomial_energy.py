@@ -3,6 +3,13 @@
 This module passes through η from input x (expects float in [0,1]) and defines
 its local energy as a weighted sum of Legendre basis functions evaluated on
 ξ ∈ [-1, 1], where ξ = 2η - 1. Analytic gradient is provided via chain rule.
+
+This parameterization avoids the ill-conditioning of monomial bases (1, η, η^2...)
+by using orthogonal polynomials (Legendre for uniform, APC for data-driven),
+following the "CODE" approach for stable global dynamics approximations.
+
+References:
+    - Wildt, N., et al. (2025). CODE: A global approach to ODE dynamics learning. arXiv:2511.15619.
 """
 
 from __future__ import annotations

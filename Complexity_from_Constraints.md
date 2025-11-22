@@ -78,6 +78,12 @@ Even the seemingly pure-math ones (Odd_VS_Even_Zeta_Substructure, sublinear_mono
   - In practice, “redemption” communicates the same idea faster and with fewer words in docs, while the code keeps neutral names (e.g., `GateBenefitCoupling`, `DirectedHingeCoupling`).
   - We use “redemption” in prose; APIs stay descriptive and neutral for clarity and searchability.
 
+### Theoretical Isomorphism: The Turbo Principle
+The architecture of "Local Modules + Sparse Non-Local Couplings + Iterative Redemption" is structurally isomorphic to **Turbo Codes** (Iterative Decoding). 
+- In Coding Theory, it was proven that simple local constraints combined with a sparse, pseudo-random "interleaver" (non-local coupling) allow a system to approach the **Shannon Limit** of global coherence.
+- Our "Redemption" mechanism is the analog of **Extrinsic Information exchange**: the future sends a "soft opinion" (gradient) back to the past, allowing local modules to break out of incorrect minima without seeing the global picture all at once. 
+- This validates the core hypothesis: you don't need a dense monolith to solve complex problems; you need a sparse, well-coupled expander graph.
+
 ### Current status
 
 Everything here is early, with kind guidance from some truly great minds I am lucky to know.  
@@ -128,6 +134,12 @@ Repositories: https://github.com/Gman-Superfly
   - Make expansions rare but impactful: increase cost, increase local energy weights a,b, or decrease k. Tune so expansion rate is low yet μ̂ improves when gates open.
   - Per-band calibration: early bands favor restraint (aux loss, higher costs); later bands favor structured gains (regularization) so when expansion triggers it’s high-value.
   - Use soft application during measurement if helpful (blend by η_gate); event-style hard application is equivalent in the limit and simpler for attribution.
+
+- The "Nugget" (Stability Keystone): Orthonormal Polynomials (aPC / CODE)
+  - Problem: Monomial energy bases ($1, \eta, \eta^2...$) are ill-conditioned, causing "energy wars" and oscillations.
+  - Fix: Map $\eta \to \xi = 2\eta - 1$ and use an **orthonormal polynomial basis** (Legendre or data-driven APC). This diagonalizes the Hessian and stabilizes the landscape.
+  - Provenance: Derived from Oladyshkin & Nowak (2012) and Wildt et al. (2025) "CODE: A global approach to ODE dynamics learning."
+  - Status: Implemented in `modules/polynomial/`.
 
 - Relaxation dynamics (assumptions)
   - 𝓕 is differentiable in η where needed; we clamp η to [0,1]. We prefer analytic ∂F/∂η when available; finite-difference is a fallback for small problems.
