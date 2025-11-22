@@ -78,4 +78,14 @@ class NashModule(EnergyModule):
         delta = (1.0 - float(eta))
         return float(a * (delta ** 2) + b * (delta ** 4))
 
+    def d_local_energy_d_eta(self, eta: OrderParameter, constraints: Mapping[str, Any]) -> float:
+        """Analytic derivative of the Landau-style local energy."""
+        assert 0.0 <= eta <= 1.0, "η must be within [0,1]"
+        a = float(constraints.get("nash_alpha", 1.0))
+        b = float(constraints.get("nash_beta", 1.0))
+        assert a >= 0.0 and b >= 0.0, "alpha/beta must be non-negative"
+        delta = 1.0 - float(eta)
+        # d/dη [a (1-η)^2 + b (1-η)^4] = -2a(1-η) - 4b(1-η)^3
+        return float(-2.0 * a * delta - 4.0 * b * (delta ** 3))
+
 

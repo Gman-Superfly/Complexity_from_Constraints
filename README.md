@@ -56,6 +56,13 @@ Term keys follow the pattern `local:ClassName` / `coup:ClassName`.
 - This decouples modeling from tuning: instead of hard-coding all λ’s, you can learn them online, integrate with other optimizers, or plug into a broader training regimen (AGM trainer, reinforcement learning, etc.).
 - Auto-balancing (`auto_balance_term_weights`) is a simple built-in heuristic; `WeightAdapter` lets you replace it with something principled or domain-specific when needed.
 
+### Gradient + backend fast paths
+
+- `EnergyCoordinator` now defaults to `use_analytic=True`. All shipped modules/couplings implement analytic gradients, and quadratic / hinge / gate-benefit families have vectorized paths (`use_vectorized_*`) to avoid Python loops on large graphs.
+- Adaptive coordinate descent is built in: set `adaptive_coordinate_descent=True` to warm-start with coordinate updates when ΔF stalls, then fall back to gradient steps.
+- Torch/JAX backends support the same Landau-style modules (gating, sequence, connectivity, Nash) plus quadratic/hinge/gate-benefit couplings, so you can offload relaxation with `uv run pytest tests/test_torch_backend.py` / `tests/test_jax_backend.py` when those extras are installed.
+- For a complete performance playbook (ΔF90 benchmarks, profiler snippets, remaining ideas) see `docs/speed_up_tweaks.md`.
+
 ## Hypothesis tests to run
 - **Sequence redemption vs local baseline**: Compare prefix-only scoring to non-local coupling + gating; measure ΔF and earlier-position fixes with `RelaxationTracker` + `GatingMetricsLogger`.
 - **Connectivity threshold shift**: With/without gate-benefit coupling and shortcuts, show that sparse non-local edges plus gating lower the apparent percolation threshold (compare ΔF, hazard stats).
@@ -135,6 +142,7 @@ uv run python -m experiments.energy_gated_expansion [--log_gating_metrics]
 uv run python -m experiments.energy_reg_attn_ablation
 uv run python -m experiments.emergent_nash_learning
 uv run python -m experiments.branching_coexistence [--log_gating_metrics]
+uv run python -m experiments.benchmark_delta_f90 --configs default analytic vect coord adaptive --steps 60
 ```
 
 Summaries:
@@ -158,6 +166,7 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 - [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — philosophy + five equations (must read).
 - [docs/README_MODULES.md](docs/README_MODULES.md) — module quick reference (interfaces, invariants).
 - [docs/README_EXPERIMENTS.md](docs/README_EXPERIMENTS.md) — experiment intent, what to log, expected signals.
+- [experiments/benchmark_delta_f90.py](experiments/benchmark_delta_f90.py) — ΔF90 benchmark harness for comparing coordinator configs (analytic vs vectorized vs coordinate descent).
 - [PYDANTIC_V2_VALIDATION_GUIDE.md](PYDANTIC_V2_VALIDATION_GUIDE.md) — required patterns for entity construction/validation across repos.
 - [cf_logging/observability.py](cf_logging/observability.py) — `RelaxationTracker` for ΔF/η traces and `GatingMetricsLogger` for hazard/η/redemption CSVs.
 - Optional autograd backend: see `core/torch_backend.py` (install torch extra).
@@ -167,6 +176,12 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 ## Notes:
 Novelty vs. reinvention: Energy-based models, graphical models, and modular RL are well-studied. The sketptic view: "This is just EBMs + sparse factor graphs + active inference, rebranded." 
 What's new?... we would argue: it's the specific combination hazard-based gating + typed micro-modules + non-local couplings + explicit redemption metrics
+
+### Related evidence (recent work)
+We note independent, recent work that aligns with parts of this framework. We converged on similar ideas separately; we cite these as related evidence without claiming priority:
+
+- Dynamic Chunking for End-to-End Hierarchical Sequence Modeling (H-Net) — dynamic boundary “gating”, smoothing (soft application) and ratio-style compression targets echo our gating + gate-benefit + complexity patterns. Link: https://arxiv.org/html/2507.07955v2
+- EXPO: Stable Reinforcement Learning with Expressive Policies — base policy plus edit-selection mirrors our “provisional + redemption” coupling with explicit benefit vs cost. Link: https://arxiv.org/html/2507.07986v2
 
 ## Utility
 Where it helps:

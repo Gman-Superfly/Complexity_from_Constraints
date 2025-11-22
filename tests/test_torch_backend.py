@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from modules.gating.energy_gating import EnergyGatingModule
-from core.couplings import QuadraticCoupling
+from core.couplings import QuadraticCoupling, GateBenefitCoupling
 
 
 def test_torch_backend_relaxation_decreases_energy():
@@ -23,6 +23,31 @@ def test_torch_backend_relaxation_decreases_energy():
     etas0 = runner._compute_initial_etas(inputs)
     energy0 = total_energy(etas0, mods, coups, constraints)
     etas_final = runner.relax(inputs=inputs, steps=50, lr=0.05)
+    energy_final = total_energy(etas_final, mods, coups, constraints)
+    assert energy_final <= energy0 + 1e-6
+    assert all(0.0 <= e <= 1.0 for e in etas_final)
+
+
+def test_torch_backend_supports_gate_benefit():
+    pytest.importorskip("torch")
+
+    from core.torch_backend import TorchEnergyRunner
+    from core.energy import total_energy
+
+    mods = [
+        EnergyGatingModule(gain_fn=lambda _: 0.2, cost=0.05, a=0.2, b=0.3),
+        EnergyGatingModule(gain_fn=lambda _: 0.0, cost=0.0, a=0.2, b=0.3),
+    ]
+    coups = [
+        (0, 1, QuadraticCoupling(weight=0.3)),
+        (0, 1, GateBenefitCoupling(weight=0.8, delta_key="delta_eta_domain")),
+    ]
+    constraints = {"delta_eta_domain": 0.15}
+    runner = TorchEnergyRunner(mods, coups, constraints)
+    inputs = [None, None]
+    etas0 = runner._compute_initial_etas(inputs)
+    energy0 = total_energy(etas0, mods, coups, constraints)
+    etas_final = runner.relax(inputs=inputs, steps=30, lr=0.05)
     energy_final = total_energy(etas_final, mods, coups, constraints)
     assert energy_final <= energy0 + 1e-6
     assert all(0.0 <= e <= 1.0 for e in etas_final)

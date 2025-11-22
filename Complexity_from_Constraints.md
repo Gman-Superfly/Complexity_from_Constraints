@@ -1,23 +1,30 @@
 # Complexity from Constraints: FEP for Coordination in Learning Systems
 
-*Oscar Goldman (@Gman-Superfly) – November 2025*
+*Oscar Goldman (@Gman-Superfly) – November 11 2025*
 
 This is not a formal paper.  
 It is simply a short note that ties together the loose threads running through all my public repositories.  
-Everything I have released is, at the deepest level, the same five equations wearing different clothes.
 
-I did not set out to find a thread between them, this is work that sparks my interests.  
+It’s a short technical note explaining the practical framework used across my public repos. The goal is concrete: document a small set of recurring energy-based patterns we use to coordinate small modules, and how this repository implements them in a reusable way.
 
-The current state is more "unifying retrospective" than "predictive theory, there is much work to be done"
+I did not set out to find a thread between projects; this is work that sparks my interests and converged on similar mechanics over time.  
 
 I am obsessively trying to make hard problems easier for myself to understand,  inverse reconstruction, training loops, agents, music, manifolds, hallucinations... sometimes have solutions that feel inevitable as most physical systems do.
 A simple scalar objective plus the ability for the future to non-locally correct the past turns out to be enough. (ahem... enough for my simple brain to work on without exploding)
 
-Five equations are enough.
+We focus on making hard problems more manageable with a simple recipe: each module exposes an order parameter and a local energy; sparse couplings allow “future-like” context to redeem past decisions; a coordinator relaxes the system by descending a total energy; gate decisions are made only when they reduce total energy and justify their cost.
 
-### The Five Equations
+### Technical description (what this framework is)
 
-Every repository ultimately executes a trivial specialization of these:
+- Energy-based coordination: small modules expose order parameters `η` and local energies `F_local(η; c)`; sparse couplings add non-local structure.
+- Relaxation loop: descend total energy `𝓕 = Σ F_local + Σ F_coupling` with guardrails (line search, invariants) and optional coordinate descent warm-start.
+- Gating: rare-but-impactful expansions, opened only when expected free-energy drop exceeds a calibrated cost.
+- Observability: traces for `ΔF`/η, simple KPIs, and hooks for weight adaptation/balancing.
+- Scope and tone: this consolidates recurring patterns used across Gman‑Superfly repos into a readable, small framework. It builds on prior work; it does not claim novelty beyond careful composition and implementation hygiene.
+
+### Core recurring equations
+
+In our repos, many subsystems use specializations of the following:
 
 1. **Local energy (Landau-Ginzburg style)**  
    $$F_i(\eta_i) = a_i \eta_i^2 + b_i \eta_i^4 - h_i \eta_i$$
@@ -34,7 +41,7 @@ Every repository ultimately executes a trivial specialization of these:
 5. **Relaxation dynamics**  
    $$\dot{\eta}_i = -\frac{\partial \mathcal{F}}{\partial \eta_i}$$
 
-That is literally all of it.
+These forms recur throughout the repos; this framework implements and composes them in a small, typed codebase.
 
 ### Where the Equations Appear
 
@@ -53,9 +60,29 @@ That is literally all of it.
 
 Even the seemingly pure-math ones (Odd_VS_Even_Zeta_Substructure, sublinear_monotonicity_score) are consequences: certain structures lower the free energy under compression bases.
 
+### Terminology: why “redemption”
+
+- Plain-language intent
+  - We use “redemption” to describe when later context improves earlier, provisional decisions. It is not moral or mystical; it’s a concise way to say “future‑like evidence can lower the energy assigned to past choices.” In practice, this helps cross‑disciplinary teams grasp the mechanism quickly.
+
+- Technical mapping (what “redemption” means in math/code)
+  - Non‑local correction is instantiated by coupling terms and a gate that only admits changes when they reduce total energy:
+    - Hinge‑style coupling (future corrects past): \(C_{j\to i} = \lambda_{ji}\,[\,d(\hat y_i, f(\eta_j)) - m\,]^+\).
+    - Gate–benefit coupling (impact‑weighted): \(F_{g,d} = -\, w \cdot \eta_{\text{gate}} \cdot \Delta \eta_{\text{domain}}\).
+    - Acceptance criterion (expansion): \(\Delta \mathcal{F}_{\text{new}} < -\tau\) (paying complexity cost \(\gamma\) if applicable).
+    - Relaxation then integrates accepted changes via \(\dot{\eta} = -\partial \mathcal{F}/\partial \eta\).
+  - In other words, “redemption” = non‑local, benefit‑weighted corrections that are admitted only when they demonstrably lower the total energy.
+
+- Alternatives we considered (and why we stayed with “redemption”)
+  - “Retrospective correction”, “non‑local correction”, “backward evidence propagation”, “edit selection”, “benefit‑driven expansion” are technically accurate.
+  - In practice, “redemption” communicates the same idea faster and with fewer words in docs, while the code keeps neutral names (e.g., `GateBenefitCoupling`, `DirectedHingeCoupling`).
+  - We use “redemption” in prose; APIs stay descriptive and neutral for clarity and searchability.
+
 ### Current status
 
-Everything here is early, built alone, with kind guidance from some truly great minds I am lucky to know.  
+Everything here is early, with kind guidance from some truly great minds I am lucky to know.  
+(they will be listed here when everything works as to not have them panic just yet :D )
+
 Every complete codebase is obsessively tested for its size, but not yet battle-tested at massive scale.  
 I release it because the ideas feel too useful to keep on my drives, and because the joy of working on this brings me to a zen peacefullness when it leaves my drives, where it could be lost, better to share than repeat past mistakes where unforseen data corruption destroys hard work.
 
