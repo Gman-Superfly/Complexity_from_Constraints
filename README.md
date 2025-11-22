@@ -134,6 +134,43 @@ Notes:
 - Keep `noise_magnitude=0.0` for reproducible baselines; set > 0 for search/robustness runs.
 - See `tests/test_orthogonal_noise.py` for math checks and integration behavior.
 
+### Energy Conservation and Monotonic Energy Assertions
+`EnergyCoordinator` enforces a **monotonic energy assertion** by default (`assert_monotonic_energy=True`) during deterministic gradient descent. This aligns with the repo’s energy‑minimization goal and catches gradient bugs, numerical instability, or misconfigured couplings early. Built‑in guards auto‑skip the assertion when it doesn’t conceptually apply.
+
+NOTE it's actually optional **monotonic energy assertion** 
+(`assert_monotonic_energy= False or True`) that enforces strict energy conservation during gradient descent is on by default. This is a powerful debugging and validation tool for ethos conformity, it's not strictly for everything you may need.
+it's for catching gradient bugs, numerical instability, or misconfigured couplings early. but remember this is changeable!!
+
+Example:
+```python
+coord = EnergyCoordinator(
+    modules=mods,
+    couplings=coups,
+    constraints={},
+    assert_monotonic_energy=True,      # Enable strict check
+    monotonic_energy_tol=1e-10,        # Tolerance for numeric jitter
+    noise_magnitude=0.0,               # Must be deterministic
+    line_search=False                  # Line search has its own logic
+)
+```
+
+**When to enable**:
+- Unit tests and CI/CD (catch regressions)
+- Debugging new gradient implementations
+- Validating coupling configurations
+- Benchmarking deterministic baselines
+
+**Auto‑skip or disable when**:
+- Using exploration noise (`noise_magnitude > 0`) — second-order effects can increase energy
+- Using line search — it expects trial steps to fail
+- Using adaptive methods (ADMM, operator-splitting) — transient increases are part of convergence
+- Using homotopy schedules or dynamic term weights (weight adapters) — the energy function changes over time
+- Production deployments — use soft monitoring instead, or leave on and rely on guards
+
+Guards automatically skip the assertion when noise, line search, or homotopy/weight‑adaptation are active, so it is safe as a default. You can still set `assert_monotonic_energy=False` to explicitly disable.
+
+See `docs/ENERGY_CONSERVATION_AND_MONOTONICITY.md` for detailed guidance, mathematical background, and troubleshooting.
+
 #### Normalized Dynamics: why orthogonal (tangent-plane) noise
 Short answer: In Normalized Dynamics, the update uses the unit gradient direction. The gradient defines the normal to the energy level set, so the orthogonal complement is the tangent space. Injecting noise in that tangent space is structure‑preserving: it explores along the level set and doesn’t raise energy to first order. That’s the geometric reason a normalized, direction‑only flow naturally pairs with orthogonal (tangent‑plane) noise.
 
@@ -159,6 +196,7 @@ See also: `core/coordinator.py` (enable_orthogonal_noise, noise_magnitude), `tes
 ### Observability helpers
 - Per‑step relaxation traces: `RelaxationTracker(name, run_id).attach(coord)` then `flush()` after relaxation.
 - Per-step energy budget: `EnergyBudgetTracker(run_id="...").attach(coord)` logs per-term `energy:*`, `grad_norm:*`, backtracks and optional `contraction_margin` to CSV; call `flush()` after relaxation. Plot with `uv run python -m experiments.plot_energy_budget --input logs/energy_budget.csv --metric energy:local:YourModule`.
+- Lipschitz details for allocator/telemetry: set `expose_lipschitz_details=True` to compute a Gershgorin-like bound with components exposed as a dict: `L_est`, `row_sums`, `row_targets`, `row_margins`, `global_margin`, `family_costs`, and `edge_costs`. If your `weight_adapter` defines attributes `edge_costs`, `row_margins`, or `global_margin`, the coordinator injects these per-step for allocator policies.
 - Torch/JAX backends support the same Landau-style modules (gating, sequence, connectivity, Nash) plus quadratic/hinge/gate-benefit couplings, so you can offload relaxation with `uv run pytest tests/test_torch_backend.py` / `tests/test_jax_backend.py` when those extras are installed.
 - For a complete performance playbook (ΔF90 benchmarks, profiler snippets, remaining ideas) see `docs/speed_up_tweaks.md`.
 

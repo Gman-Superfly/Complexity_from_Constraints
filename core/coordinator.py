@@ -103,6 +103,9 @@ class EnergyCoordinator:
     # Note: default magnitude is 0.0 to preserve determinism unless explicitly enabled in experiments.
     noise_magnitude: float = 0.0
     noise_schedule_decay: float = 0.99  # Simple exponential decay for noise magnitude
+    # Energy conservation check (enabled by default; aligns with repo's monotonic energy goal)
+    assert_monotonic_energy: bool = True  # Assert F_t+1 ≤ F_t in deterministic mode; guards auto-skip for noise/line-search
+    monotonic_energy_tol: float = 1e-10  # Tolerance for numeric jitter
 
     on_eta_updated: List[EtaUpdateCallback] = field(default_factory=list)
     on_energy_updated: List[EnergyUpdateCallback] = field(default_factory=list)
@@ -341,6 +344,21 @@ class EnergyCoordinator:
                     continue
             if self.enforce_invariants:
                 self._check_invariants(etas, energy_value)
+            # Optional strict monotonicity assertion (for debugging/validation in deterministic mode)
+            if (
+                self.assert_monotonic_energy
+                and self.noise_magnitude <= 1e-12
+                and not self.line_search
+                and self.weight_adapter is None
+                and not homotopy_active
+                and prev_energy_value is not None
+            ):
+                assert energy_value <= prev_energy_value + self.monotonic_energy_tol, (
+                    f"Energy increased: {prev_energy_value:.12e} → {energy_value:.12e} "
+                    f"(Δ={energy_value - prev_energy_value:.3e}). This indicates a gradient bug, "
+                    f"numerical instability, or misconfigured coupling. Disable assert_monotonic_energy "
+                    f"if using exploration noise, line search, homotopy/weight-adaptation, or exotic schedules."
+                )
             # Early stop on non-monotonic energy (guard against oscillations)
             if prev_energy_value is not None and energy_value > prev_energy_value + 1e-12:
                 break
@@ -354,7 +372,8 @@ class EnergyCoordinator:
                 # If adapter supports allocator fields, inject details snapshot
                 if self._last_lipschitz_details is not None:
                     if hasattr(self.weight_adapter, "edge_costs"):
-                        edge_costs = self._last_lipschitz_details.get("family_costs", {})
+                        # Prefer true edge_costs when available; fall back to family_costs
+                        edge_costs = self._last_lipschitz_details.get("edge_costs") or self._last_lipschitz_details.get("family_costs", {})
                         try:
                             # type: ignore[attr-defined]
                             self.weight_adapter.edge_costs = {str(k): float(v) for k, v in edge_costs.items()}
@@ -1084,12 +1103,15 @@ class EnergyCoordinator:
             d = per_row_family[row]
             d[fam] = float(d.get(fam, 0.0) + amount)
 
-        for i, j, coup in self.couplings:
+        # Track per-edge costs (index-based), using the same smoothed contributions
+        edge_costs: dict[int, float] = {}
+
+        for edge_idx, (i, j, coup) in enumerate(self.couplings):
             key = f"coup:{coup.__class__.__name__}"
             w_eff = float(self._combined_term_weights().get(key, 1.0))
             if isinstance(coup, QuadraticCoupling):
                 w = float(getattr(coup, "weight", 0.0)) * w_eff
-                add = 2.0 * w
+                add = 2.0 * w  # diag and off-diag magnitude per row
                 if add != 0.0:
                     diag[i] += add
                     diag[j] += add
@@ -1097,6 +1119,8 @@ class EnergyCoordinator:
                     offsum[j] += add
                     _add_row_family(i, key, add + add)  # diag+offsum contribution to row i
                     _add_row_family(j, key, add + add)  # row j
+                    # Per-edge cost: max row contribution from this edge
+                    edge_costs[edge_idx] = float((add + add))
             elif isinstance(coup, DirectedHingeCoupling):
                 w = float(getattr(coup, "weight", 0.0)) * w_eff
                 gap = float(etas[j]) - float(etas[i])
@@ -1115,6 +1139,7 @@ class EnergyCoordinator:
                     offsum[j] += add
                     _add_row_family(i, key, add + add)
                     _add_row_family(j, key, add + add)
+                    edge_costs[edge_idx] = float((add + add))
             elif isinstance(coup, AsymmetricHingeCoupling):
                 w = float(getattr(coup, "weight", 0.0)) * w_eff
                 alpha = float(getattr(coup, "alpha_i", 1.0))
@@ -1136,6 +1161,7 @@ class EnergyCoordinator:
                     offsum[j] += add_off
                     _add_row_family(i, key, add_i + add_off)
                     _add_row_family(j, key, add_j + add_off)
+                    edge_costs[edge_idx] = float(max(add_i + add_off, add_j + add_off))
             else:
                 # GateBenefit (linear) and others: no curvature
                 continue
@@ -1177,6 +1203,7 @@ class EnergyCoordinator:
             "row_margins": row_margins,
             "global_margin": global_margin,
             "family_costs": family_costs,
+            "edge_costs": {int(k): float(v) for k, v in edge_costs.items()},
         }
 
     def _emit_eta(self, etas: List[OrderParameter]) -> None:
