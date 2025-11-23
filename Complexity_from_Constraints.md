@@ -1,6 +1,6 @@
 # Complexity from Constraints: FEP for Coordination in Learning Systems
 
-*Oscar Goldman (@Gman-Superfly) – November 11 2025*
+*Oscar Goldman (@Gman-Superfly) – November 11... 2025*
 
 This is not a formal paper.  
 It is simply a short note that ties together the loose threads running through all my public repositories.  
@@ -13,6 +13,10 @@ I am obsessively trying to make hard problems easier for myself to understand, i
 A simple scalar objective plus the ability for the future to non-locally correct the past turns out to be enough. (ahem... enough for my simple brain to work on without exploding)
 
 We focus on making hard problems more manageable with a simple recipe: each module exposes an order parameter and a local energy; sparse couplings allow “future-like” context to redeem past decisions; a coordinator relaxes the system by descending a total energy; gate decisions are made only when they reduce total energy and justify their cost.
+
+Deep Learning (Transformers) is "System 1" thinking: Fast, intuitive, can contain errors/hallucination.
+
+Complexity_from_Constraints methodology is "System 2" thinking: Slow, deliberate, logical, guaranteed to respect rules.
 
 ### Technical description (what this framework is)
 

@@ -34,7 +34,9 @@ contains ideas and code from other Gman-Superfly repos and Abstractions by Furla
   - `term_weight_floor` / `term_weight_ceiling`: clamp how far auto-scaling can push weights (prevents runaway boosts).
   - For critical terms, override `constraints["term_weights"]` or supply a custom `WeightAdapter` to run your own strategy.
 
-  ## The "Wormhole Effect" (Gradient Teleportation)
+## The "Wormhole Effect" (Gradient Teleportation)
+
+(needs to be tested at scale!, for now it's cute.. motivation: I wanted the Flow to be intelligent and the components to be dumb.)
 
 Why does this system solve problems that standard sparse networks get stuck on? It uses a mechanism we call **Non-Local Gradient Teleportation** (or the "Wormhole Effect").
 
