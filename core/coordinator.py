@@ -9,7 +9,7 @@ This coordinator can:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Mapping, Tuple, Optional, Iterable
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import math
 import warnings
@@ -30,10 +30,44 @@ from .couplings import (
     GateBenefitCoupling,
     DampedGateBenefitCoupling,
 )
-from .energy import total_energy, project_noise_orthogonal
-from .prox_utils import prox_quadratic_pair, prox_asym_hinge_pair, prox_linear_gate
+from .energy import project_noise_orthogonal, total_energy
+from .prox_utils import prox_asym_hinge_pair, prox_linear_gate, prox_quadratic_pair
 from .agm_metrics import compute_agm_phase_metrics, compute_uncertainty_metrics
 from .noise_controller import OrthogonalNoiseController
+
+
+@dataclass
+class _VectorizedCouplingCache:
+    quadratic_i: np.ndarray
+    quadratic_j: np.ndarray
+    quadratic_weights: np.ndarray
+    quadratic_term_keys: Tuple[str, ...]
+
+    directed_i: np.ndarray
+    directed_j: np.ndarray
+    directed_weights: np.ndarray
+    directed_term_keys: Tuple[str, ...]
+
+    asymmetric_i: np.ndarray
+    asymmetric_j: np.ndarray
+    asymmetric_weights: np.ndarray
+    asymmetric_term_keys: Tuple[str, ...]
+    asymmetric_alpha: np.ndarray
+    asymmetric_beta: np.ndarray
+
+    gate_idx: np.ndarray
+    gate_weights: np.ndarray
+    gate_term_keys: Tuple[str, ...]
+    gate_delta_keys: Tuple[str, ...]
+
+    damped_idx: np.ndarray
+    damped_weights: np.ndarray
+    damped_term_keys: Tuple[str, ...]
+    damped_delta_keys: Tuple[str, ...]
+    damped_damping: np.ndarray
+    damped_eta_power: np.ndarray
+    damped_positive_scale: np.ndarray
+    damped_negative_scale: np.ndarray
 
 EtaUpdateCallback = Callable[[List[OrderParameter]], None]
 EnergyUpdateCallback = Callable[[float], None]
@@ -158,10 +192,13 @@ class EnergyCoordinator:
     _last_energy_drop_ratio: float = field(default=1.0, init=False, repr=False)
     _gate_uncertainty_scale: float = field(default=1.0, init=False, repr=False)
     _accepted_energy_history: List[float] = field(default_factory=list, init=False, repr=False)
+    _contraction_margin_history: List[float] = field(default_factory=list, init=False, repr=False)
+    _vectorized_cache: Optional[_VectorizedCouplingCache] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._validate_configuration()
         self._ensure_adjacency(len(self.modules))
+        self._build_vectorized_cache()
         if self.auto_noise_controller and self.enable_orthogonal_noise:
             self._noise_controller = OrthogonalNoiseController(
                 base_magnitude=float(self.noise_magnitude),
@@ -231,6 +268,7 @@ class EnergyCoordinator:
         prev_energy_value: Optional[float] = energy_value
         self._gate_uncertainty_scale = 1.0
         self._accepted_energy_history = []
+        self._contraction_margin_history = []
         oscillations = 0
         if self.adaptive_coordinate_descent:
             etas = self.relax_etas_coordinate(
@@ -285,6 +323,7 @@ class EnergyCoordinator:
                     if self.log_contraction_margin:
                         margin = (2.0 / L_est) - step_to_use
                         self._last_contraction_margin = margin
+                        self._contraction_margin_history.append(float(margin))
                         # Emit warning if margin shrinks below threshold
                         if self.warn_on_margin_shrink and margin < self.margin_warn_threshold:
                             warnings.warn(
@@ -296,6 +335,7 @@ class EnergyCoordinator:
                             )
             elif self.stability_guard and self.log_contraction_margin:
                 self._last_contraction_margin = None
+                self._contraction_margin_history.append(float("nan"))
             
             # Inject orthogonal noise if enabled (structure-preserving exploration)
             grad_vector = np.array(grads, dtype=float)
@@ -458,8 +498,8 @@ class EnergyCoordinator:
                     etas = etas_prev
                     energy_value = prev_energy_value
                     continue
-                    else:
-                break
+                else:
+                    break
             # Emit only after acceptance
             self._emit_energy(energy_value)
             self._record_energy_history(energy_value)
@@ -556,9 +596,9 @@ class EnergyCoordinator:
                     )
                 elif isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
                     # Prox for linear gate term on variable i (j unaffected)
-                        gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
+                    gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
                     # For F = ... + gi*η_i (since gi = ∂F/∂η_i), prox uses coeff = -gi
-                        coeff = -float(gi) * w_c
+                    coeff = -float(gi) * w_c
                     etas[i] = prox_linear_gate(etas[i], coeff, tau)
                 # else: no-op for unknown types
             # Check invariants and acceptance
@@ -820,7 +860,7 @@ class EnergyCoordinator:
             grad_arr += np.asarray(hinge_grads, dtype=float)
         if self.use_vectorized_gate_benefits:
             grad_arr += self._gate_benefit_gradients_vectorized(etas, cw)
-                for i, j, coup in self.couplings:
+        for i, j, coup in self.couplings:
             if self.use_vectorized_quadratic and isinstance(coup, QuadraticCoupling):
                 continue
             if self.use_vectorized_hinges and isinstance(coup, (DirectedHingeCoupling, AsymmetricHingeCoupling)):
@@ -828,8 +868,8 @@ class EnergyCoordinator:
             if self.use_vectorized_gate_benefits and isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
                 continue
             w = float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
-                        if isinstance(coup, SupportsCouplingGrads):
-                            gi, gj = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
+            if isinstance(coup, SupportsCouplingGrads):
+                gi, gj = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
                 grad_arr[i] += w * float(gi)
                 grad_arr[j] += w * float(gj)
             else:
@@ -913,142 +953,114 @@ class EnergyCoordinator:
         """Vectorized accumulation of gradients for quadratic couplings."""
         n = len(etas)
         grads = np.zeros(n, dtype=float)
-        if not self.couplings:
+        cache = self._vectorized_cache
+        if cache is None or cache.quadratic_i.size == 0:
             return grads.tolist()
-        idx_i = np.fromiter((i for i, _j, _c in self.couplings), dtype=int)
-        idx_j = np.fromiter((j for _i, j, _c in self.couplings), dtype=int)
-        base_w = np.fromiter((float(getattr(c, "weight", 0.0)) for _i, _j, c in self.couplings), dtype=float)
-        term_w = np.fromiter((float(cw.get(f"coup:{c.__class__.__name__}", 1.0)) for _i, _j, c in self.couplings), dtype=float)
-        weights = base_w * term_w
-            eta_arr = np.asarray(etas, dtype=float)
-        diff = eta_arr[idx_i] - eta_arr[idx_j]
-            gi = 2.0 * weights * diff
-            gj = -2.0 * weights * diff
-        np.add.at(grads, idx_i, gi)
-        np.add.at(grads, idx_j, gj)
+        eta_arr = np.asarray(etas, dtype=float)
+        term_weights = (
+            np.asarray([float(cw.get(key, 1.0)) for key in cache.quadratic_term_keys], dtype=float)
+            if cache.quadratic_term_keys
+            else np.ones_like(cache.quadratic_weights)
+        )
+        weights = cache.quadratic_weights * term_weights
+        if weights.size == 0:
+            return grads.tolist()
+        diff = eta_arr[cache.quadratic_i] - eta_arr[cache.quadratic_j]
+        gi = 2.0 * weights * diff
+        gj = -2.0 * weights * diff
+        np.add.at(grads, cache.quadratic_i, gi)
+        np.add.at(grads, cache.quadratic_j, gj)
         return grads.tolist()
 
     def _hinge_coupling_gradients_vectorized(self, etas: List[OrderParameter], cw: dict[str, float]) -> List[float]:
         """Vectorized gradients for directed/asymmetric hinge couplings."""
         n = len(etas)
         grads = np.zeros(n, dtype=float)
-        if not self.couplings:
+        cache = self._vectorized_cache
+        if cache is None:
             return grads.tolist()
         eta_arr = np.asarray(etas, dtype=float)
 
-        # Directed hinge: w * max(0, eta_j - eta_i)^2
-        dir_i = []
-        dir_j = []
-        dir_w = []
-        for i, j, coup in self.couplings:
-            if isinstance(coup, DirectedHingeCoupling):
-                dir_i.append(i)
-                dir_j.append(j)
-                key = f"coup:{coup.__class__.__name__}"
-                dir_w.append(float(getattr(coup, "weight", 0.0)) * float(cw.get(key, 1.0)))
-        if dir_i:
-            i_idx = np.asarray(dir_i, dtype=int)
-            j_idx = np.asarray(dir_j, dtype=int)
-            weights = np.asarray(dir_w, dtype=float)
-            gap = eta_arr[j_idx] - eta_arr[i_idx]
+        if cache.directed_i.size > 0:
+            weights = cache.directed_weights * (
+                np.asarray([float(cw.get(key, 1.0)) for key in cache.directed_term_keys], dtype=float)
+                if cache.directed_term_keys
+                else 1.0
+            )
+            gap = eta_arr[cache.directed_j] - eta_arr[cache.directed_i]
             mask = gap > 0.0
             contrib = 2.0 * weights * gap * mask
-            np.add.at(grads, i_idx, -contrib)
-            np.add.at(grads, j_idx, contrib)
+            np.add.at(grads, cache.directed_i, -contrib)
+            np.add.at(grads, cache.directed_j, contrib)
 
-        # Asymmetric hinge: w * max(0, beta*eta_j - alpha*eta_i)^2
-        asym_i = []
-        asym_j = []
-        asym_w = []
-        alphas = []
-        betas = []
-        for i, j, coup in self.couplings:
-            if isinstance(coup, AsymmetricHingeCoupling):
-                asym_i.append(i)
-                asym_j.append(j)
-                    alphas.append(float(coup.alpha_i))
-                    betas.append(float(coup.beta_j))
-                key = f"coup:{coup.__class__.__name__}"
-                asym_w.append(float(getattr(coup, "weight", 0.0)) * float(cw.get(key, 1.0)))
-        if asym_i:
-            i_idx = np.asarray(asym_i, dtype=int)
-            j_idx = np.asarray(asym_j, dtype=int)
-            weights = np.asarray(asym_w, dtype=float)
-            alpha_arr = np.asarray(alphas, dtype=float)
-            beta_arr = np.asarray(betas, dtype=float)
-            gap = beta_arr * eta_arr[j_idx] - alpha_arr * eta_arr[i_idx]
+        if cache.asymmetric_i.size > 0:
+            weights = cache.asymmetric_weights * (
+                np.asarray([float(cw.get(key, 1.0)) for key in cache.asymmetric_term_keys], dtype=float)
+                if cache.asymmetric_term_keys
+                else 1.0
+            )
+            gap = cache.asymmetric_beta * eta_arr[cache.asymmetric_j] - cache.asymmetric_alpha * eta_arr[cache.asymmetric_i]
             mask = gap > 0.0
-            gi = -2.0 * weights * gap * alpha_arr * mask
-            gj = 2.0 * weights * gap * beta_arr * mask
-            np.add.at(grads, i_idx, gi)
-            np.add.at(grads, j_idx, gj)
+            gi = -2.0 * weights * gap * cache.asymmetric_alpha * mask
+            gj = 2.0 * weights * gap * cache.asymmetric_beta * mask
+            np.add.at(grads, cache.asymmetric_i, gi)
+            np.add.at(grads, cache.asymmetric_j, gj)
         return grads.tolist()
 
     def _gate_benefit_gradients_vectorized(self, etas: List[OrderParameter], cw: dict[str, float]) -> np.ndarray:
         n = len(etas)
         grads = np.zeros(n, dtype=float)
-        if not self.couplings:
+        cache = self._vectorized_cache
+        if cache is None:
             return grads
         eta_arr = np.asarray(etas, dtype=float)
 
-        # GateBenefitCoupling
-        gb_idx = []
-        gb_weights = []
-        gb_delta = []
-        for i, _j, coup in self.couplings:
-            if isinstance(coup, GateBenefitCoupling):
-                key = f"coup:{coup.__class__.__name__}"
-                weight = float(coup.weight) * float(cw.get(key, 1.0))
-                delta = float(self.constraints.get(coup.delta_key, 0.0))
-                gb_idx.append(i)
-                gb_weights.append(weight)
-                gb_delta.append(delta)
-        if gb_idx:
-            idx = np.asarray(gb_idx, dtype=int)
-            weights = np.asarray(gb_weights, dtype=float)
-            delta = np.asarray(gb_delta, dtype=float)
+        if cache.gate_idx.size > 0:
+            weights = cache.gate_weights * (
+                np.asarray([float(cw.get(key, 1.0)) for key in cache.gate_term_keys], dtype=float)
+                if cache.gate_term_keys
+                else 1.0
+            )
+            delta = np.asarray(
+                [float(self.constraints.get(key, 0.0)) for key in cache.gate_delta_keys],
+                dtype=float,
+            )
             contrib = -weights * delta
-            np.add.at(grads, idx, contrib)
+            np.add.at(grads, cache.gate_idx, contrib)
 
-        # DampedGateBenefitCoupling
-        dg_idx = []
-        dg_weights = []
-        dg_damping = []
-        dg_eta_power = []
-        dg_scaled_delta = []
-        for i, _j, coup in self.couplings:
-            if isinstance(coup, DampedGateBenefitCoupling):
-                key = f"coup:{coup.__class__.__name__}"
-                weight = float(coup.weight) * float(cw.get(key, 1.0))
-                delta = float(self.constraints.get(coup.delta_key, 0.0))
-                if delta >= 0.0:
-                    scaled = float(coup.positive_scale) * delta
-                else:
-                    scaled = float(coup.negative_scale) * delta
-                dg_idx.append(i)
-                dg_weights.append(weight)
-                dg_damping.append(float(coup.damping))
-                dg_eta_power.append(float(coup.eta_power))
-                dg_scaled_delta.append(scaled)
-        if dg_idx:
-            idx = np.asarray(dg_idx, dtype=int)
-            weights = np.asarray(dg_weights, dtype=float)
-            damping = np.asarray(dg_damping, dtype=float)
-            eta_power = np.asarray(dg_eta_power, dtype=float)
-            scaled_delta = np.asarray(dg_scaled_delta, dtype=float)
-            gate_vals = eta_arr[idx]
+        if cache.damped_idx.size > 0:
+            weights = cache.damped_weights * (
+                np.asarray([float(cw.get(key, 1.0)) for key in cache.damped_term_keys], dtype=float)
+                if cache.damped_term_keys
+                else 1.0
+            )
+            delta = np.asarray(
+                [float(self.constraints.get(key, 0.0)) for key in cache.damped_delta_keys],
+                dtype=float,
+            )
+            scaled = np.where(
+                delta >= 0.0,
+                cache.damped_positive_scale * delta,
+                cache.damped_negative_scale * delta,
+            )
+            gate_vals = eta_arr[cache.damped_idx]
             grad_vals = np.zeros_like(gate_vals)
-            # When scaled_delta == 0 or damping/weights 0, contrib is 0
-            mask_nonzero = (scaled_delta != 0.0) & (weights != 0.0) & (damping != 0.0)
+            mask_nonzero = (scaled != 0.0) & (weights != 0.0) & (cache.damped_damping != 0.0)
             if np.any(mask_nonzero):
-                mask_one = mask_nonzero & (eta_power == 1.0)
-                grad_vals[mask_one] = -weights[mask_one] * damping[mask_one] * scaled_delta[mask_one]
-                mask_pow = mask_nonzero & (eta_power != 1.0) & (gate_vals > 0.0)
+                mask_one = mask_nonzero & (cache.damped_eta_power == 1.0)
+                grad_vals[mask_one] = (
+                    -weights[mask_one] * cache.damped_damping[mask_one] * scaled[mask_one]
+                )
+                mask_pow = mask_nonzero & (cache.damped_eta_power != 1.0) & (gate_vals > 0.0)
                 if np.any(mask_pow):
-                    grad_vals[mask_pow] = -weights[mask_pow] * damping[mask_pow] * scaled_delta[mask_pow] * eta_power[mask_pow] * (
-                        gate_vals[mask_pow] ** (eta_power[mask_pow] - 1.0)
+                    grad_vals[mask_pow] = (
+                        -weights[mask_pow]
+                        * cache.damped_damping[mask_pow]
+                        * scaled[mask_pow]
+                        * cache.damped_eta_power[mask_pow]
+                        * (gate_vals[mask_pow] ** (cache.damped_eta_power[mask_pow] - 1.0))
                     )
-            np.add.at(grads, idx, grad_vals)
+            np.add.at(grads, cache.damped_idx, grad_vals)
         return grads
 
     def _local_energy_grad_batch(self, etas: List[OrderParameter]) -> Tuple[np.ndarray, np.ndarray]:
@@ -1106,22 +1118,19 @@ class EnergyCoordinator:
         return buf
 
     def _quadratic_energy_vectorized(self, etas: List[OrderParameter], cw: dict[str, float]) -> float:
-        if not self.couplings:
-            return 0.0
-        idx_i = np.fromiter((i for i, _j, c in self.couplings if isinstance(c, QuadraticCoupling)), dtype=int)
-        idx_j = np.fromiter((j for _i, j, c in self.couplings if isinstance(c, QuadraticCoupling)), dtype=int)
-        weights = np.fromiter(
-            (
-                float(getattr(c, "weight", 0.0)) * float(cw.get(f"coup:{c.__class__.__name__}", 1.0))
-                for _i, _j, c in self.couplings
-                if isinstance(c, QuadraticCoupling)
-            ),
-            dtype=float,
-        )
-        if len(idx_i) == 0:
+        cache = self._vectorized_cache
+        if cache is None or cache.quadratic_i.size == 0:
             return 0.0
         eta_arr = np.asarray(etas, dtype=float)
-        diff = eta_arr[idx_i] - eta_arr[idx_j]
+        term_weights = (
+            np.asarray([float(cw.get(key, 1.0)) for key in cache.quadratic_term_keys], dtype=float)
+            if cache.quadratic_term_keys
+            else np.ones_like(cache.quadratic_weights)
+        )
+        weights = cache.quadratic_weights * term_weights
+        if weights.size == 0:
+            return 0.0
+        diff = eta_arr[cache.quadratic_i] - eta_arr[cache.quadratic_j]
         return float(np.sum(weights * diff * diff))
 
     def _step_with_backtracking(self, etas: List[OrderParameter], grads: List[float], step_init: float) -> List[float]:
@@ -1267,7 +1276,7 @@ class EnergyCoordinator:
 
         def _add_row_family(row: int, fam: str, amount: float) -> None:
             if amount == 0.0:
-            return
+                return
             d = per_row_family[row]
             d[fam] = float(d.get(fam, 0.0) + amount)
 
@@ -1297,7 +1306,7 @@ class EnergyCoordinator:
                     s = 1.0
                 elif -smoothing_epsilon < gap <= 0.0:
                     s = (gap + smoothing_epsilon) / smoothing_epsilon
-            else:
+                else:
                     s = 0.0
                 if s > 0.0 and w != 0.0:
                     add = 2.0 * w * s
@@ -1400,6 +1409,17 @@ class EnergyCoordinator:
         if len(self._accepted_energy_history) > 256:
             self._accepted_energy_history = self._accepted_energy_history[-256:]
 
+    def last_relaxation_metrics(self) -> Mapping[str, Any]:
+        """Expose basic observability for the most recent relaxation run."""
+        history = list(self._accepted_energy_history)
+        return {
+            "accepted_steps": len(history),
+            "energy_trace": history,
+            "last_energy_drop_ratio": float(self._last_energy_drop_ratio),
+            "last_contraction_margin": self._last_contraction_margin,
+            "contraction_margins": list(self._contraction_margin_history),
+        }
+
     def _update_uncertainty_gate_scale(self) -> None:
         if not self._accepted_energy_history:
             return
@@ -1440,6 +1460,111 @@ class EnergyCoordinator:
             adj[i].append((j, coup))
             adj[j].append((i, coup))
         self._adjacency = adj
+
+    def _build_vectorized_cache(self) -> None:
+        """Pre-compute sparse index structures for vectorized kernels."""
+        if not self.couplings:
+            self._vectorized_cache = _VectorizedCouplingCache(
+                quadratic_i=np.zeros(0, dtype=int),
+                quadratic_j=np.zeros(0, dtype=int),
+                quadratic_weights=np.zeros(0, dtype=float),
+                quadratic_term_keys=tuple(),
+                directed_i=np.zeros(0, dtype=int),
+                directed_j=np.zeros(0, dtype=int),
+                directed_weights=np.zeros(0, dtype=float),
+                directed_term_keys=tuple(),
+                asymmetric_i=np.zeros(0, dtype=int),
+                asymmetric_j=np.zeros(0, dtype=int),
+                asymmetric_weights=np.zeros(0, dtype=float),
+                asymmetric_term_keys=tuple(),
+                asymmetric_alpha=np.zeros(0, dtype=float),
+                asymmetric_beta=np.zeros(0, dtype=float),
+                gate_idx=np.zeros(0, dtype=int),
+                gate_weights=np.zeros(0, dtype=float),
+                gate_term_keys=tuple(),
+                gate_delta_keys=tuple(),
+                damped_idx=np.zeros(0, dtype=int),
+                damped_weights=np.zeros(0, dtype=float),
+                damped_term_keys=tuple(),
+                damped_delta_keys=tuple(),
+                damped_damping=np.zeros(0, dtype=float),
+                damped_eta_power=np.zeros(0, dtype=float),
+                damped_positive_scale=np.zeros(0, dtype=float),
+                damped_negative_scale=np.zeros(0, dtype=float),
+            )
+            return
+
+        def _tuple_keys(items: List[str]) -> Tuple[str, ...]:
+            return tuple(items)
+
+        quadratic = [(i, j, coup) for i, j, coup in self.couplings if isinstance(coup, QuadraticCoupling)]
+        directed = [(i, j, coup) for i, j, coup in self.couplings if isinstance(coup, DirectedHingeCoupling)]
+        asymmetric = [(i, j, coup) for i, j, coup in self.couplings if isinstance(coup, AsymmetricHingeCoupling)]
+        gate = [(i, j, coup) for i, j, coup in self.couplings if isinstance(coup, GateBenefitCoupling)]
+        damped = [(i, j, coup) for i, j, coup in self.couplings if isinstance(coup, DampedGateBenefitCoupling)]
+
+        cache = _VectorizedCouplingCache(
+            quadratic_i=np.asarray([i for i, _, _ in quadratic], dtype=int) if quadratic else np.zeros(0, dtype=int),
+            quadratic_j=np.asarray([j for _, j, _ in quadratic], dtype=int) if quadratic else np.zeros(0, dtype=int),
+            quadratic_weights=np.asarray(
+                [float(getattr(coup, "weight", 0.0)) for _, _, coup in quadratic], dtype=float
+            )
+            if quadratic
+            else np.zeros(0, dtype=float),
+            quadratic_term_keys=_tuple_keys([f"coup:{coup.__class__.__name__}" for _, _, coup in quadratic]),
+            directed_i=np.asarray([i for i, _, _ in directed], dtype=int) if directed else np.zeros(0, dtype=int),
+            directed_j=np.asarray([j for _, j, _ in directed], dtype=int) if directed else np.zeros(0, dtype=int),
+            directed_weights=np.asarray(
+                [float(getattr(coup, "weight", 0.0)) for _, _, coup in directed], dtype=float
+            )
+            if directed
+            else np.zeros(0, dtype=float),
+            directed_term_keys=_tuple_keys([f"coup:{coup.__class__.__name__}" for _, _, coup in directed]),
+            asymmetric_i=np.asarray([i for i, _, _ in asymmetric], dtype=int) if asymmetric else np.zeros(0, dtype=int),
+            asymmetric_j=np.asarray([j for _, j, _ in asymmetric], dtype=int) if asymmetric else np.zeros(0, dtype=int),
+            asymmetric_weights=np.asarray(
+                [float(getattr(coup, "weight", 0.0)) for _, _, coup in asymmetric], dtype=float
+            )
+            if asymmetric
+            else np.zeros(0, dtype=float),
+            asymmetric_term_keys=_tuple_keys([f"coup:{coup.__class__.__name__}" for _, _, coup in asymmetric]),
+            asymmetric_alpha=np.asarray([float(coup.alpha_i) for _, _, coup in asymmetric], dtype=float)
+            if asymmetric
+            else np.zeros(0, dtype=float),
+            asymmetric_beta=np.asarray([float(coup.beta_j) for _, _, coup in asymmetric], dtype=float)
+            if asymmetric
+            else np.zeros(0, dtype=float),
+            gate_idx=np.asarray([i for i, _, _ in gate], dtype=int) if gate else np.zeros(0, dtype=int),
+            gate_weights=np.asarray([float(coup.weight) for _, _, coup in gate], dtype=float)
+            if gate
+            else np.zeros(0, dtype=float),
+            gate_term_keys=_tuple_keys([f"coup:{coup.__class__.__name__}" for _, _, coup in gate]),
+            gate_delta_keys=_tuple_keys([str(coup.delta_key) for _, _, coup in gate]),
+            damped_idx=np.asarray([i for i, _, _ in damped], dtype=int) if damped else np.zeros(0, dtype=int),
+            damped_weights=np.asarray([float(coup.weight) for _, _, coup in damped], dtype=float)
+            if damped
+            else np.zeros(0, dtype=float),
+            damped_term_keys=_tuple_keys([f"coup:{coup.__class__.__name__}" for _, _, coup in damped]),
+            damped_delta_keys=_tuple_keys([str(coup.delta_key) for _, _, coup in damped]),
+            damped_damping=np.asarray([float(coup.damping) for _, _, coup in damped], dtype=float)
+            if damped
+            else np.zeros(0, dtype=float),
+            damped_eta_power=np.asarray([float(coup.eta_power) for _, _, coup in damped], dtype=float)
+            if damped
+            else np.zeros(0, dtype=float),
+            damped_positive_scale=np.asarray([float(coup.positive_scale) for _, _, coup in damped], dtype=float)
+            if damped
+            else np.zeros(0, dtype=float),
+            damped_negative_scale=np.asarray([float(coup.negative_scale) for _, _, coup in damped], dtype=float)
+            if damped
+            else np.zeros(0, dtype=float),
+        )
+        self._vectorized_cache = cache
+
+    def rebuild_vectorization_cache(self) -> None:
+        """Public hook when couplings change at runtime."""
+        self._vectorized_cache = None
+        self._build_vectorized_cache()
 
     def _active_indices(self, etas: List[OrderParameter]) -> Iterable[int]:
         """Return indices participating in any coupling (plus their neighbors)."""

@@ -26,6 +26,31 @@ contains ideas and code from other Gman-Superfly repos and Abstractions by Furla
 - Read the philosophy + five equations here: **[Complexity_from_Constraints.md](Complexity_from_Constraints.md)** and see module/experiment guides in `docs/`.
 - Gradient discipline: coordinator can auto-rescale term weights when a family’s gradient norm explodes (opt-in `auto_balance_term_weights`). This avoids “energy wars” while emitting warnings so you know it happened. Longer term we’ll replace this heuristic with a principled balancing method, but it keeps runs sane today.
 
+## System‑2 Reasoning Layer (P2 progress)
+- **Warm-start scaffolding**: `MLPWarmStartProposer`, `WarmStartProposal`, and `run_warm_start_relaxation(...)` let you seed η₀ from heuristics/LLM hints, run a truncated K-step relaxation under the stability guard, and log contraction margins + accepted steps.
+- **Adapter boundary**: `StructuredTextLLMAdapter` (in `core/llm_adapter.py`) converts LLM drafts into η proposals + constraint overrides. Swap in your own adapter for code, ASTs, planner traces, etc.
+- **Caching + stages**: `CachedActiveSetAmortizer` reuses η₀ for similar problems and emits execution plans via `plan_stage_execution(...)`.
+- **Compile-time vectorization**: `_VectorizedCouplingCache` builds block-sparse index arrays once so quadratic/hinge/gate-benefit gradients reuse them; see `experiments/vectorization_benchmark.py` for a quick runtime log.
+- **Example pipeline**: `examples/system2_reasoning_demo.py` wires these pieces together as “LLM draft → adapter → warm-start relaxation”.
+
+```python
+from core.amortizer import MLPWarmStartProposer, run_warm_start_relaxation
+from core.llm_adapter import StructuredTextLLMAdapter
+
+warm_start = MLPWarmStartProposer(input_dim=3, hidden_dim=16)
+adapter = StructuredTextLLMAdapter(warm_start=warm_start, vocabulary=("if", "return", "else"))
+adapter_result = adapter.build(llm_output="if x: return x", modules=modules, hints={"schema": "python"})
+
+result = run_warm_start_relaxation(
+    coord,
+    proposal=adapter_result.proposal,
+    constraint_overrides=adapter_result.constraint_overrides,
+    relax_steps=8,
+)
+print("ΔF:", result.initial_energy - result.final_energy)
+print("Contraction margins:", result.relaxation_metrics["contraction_margins"])
+```
+
   Meta-training note: `WeightAdapter` hooks let an outer loop learn term weights instead of fixing them. Use this when you want GradNorm-style balancing or integration with other trainers.
 
   Tunable knobs:

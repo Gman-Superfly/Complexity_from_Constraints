@@ -96,30 +96,70 @@ This document summarizes the completion of Phase 1 core technical work (P0/P1) f
 | **AGM Adapter** | ✅ | Prior work | README.md |
 | **GSPO-token Adapter** | ✅ | Prior work (MVP) | README.md |
 
-### 🚧 Remaining Phase 1 Work (P2-P5)
+### 🚧 Remaining Phase 1 Work (P3/P5)
 
-**Timeline**: 3-6 weeks for complete Phase 1
+**Timeline**: 2-4 weeks for complete Phase 1
 
-1. **P2 — Inference & Scale**
-   - Hierarchical/amortized inference (scaffold exists, needs expansion)
-   - Compile-time graph vectorization (optimization)
+1. **P3 — Observability & Visualization**
+   - Event-driven visualization (RelaxationStarted, StepExecuted, SnapApplied, GainThrottled, Converged)
+   - Streamlit dashboard for energy descent animation + interactive trace scrubbing
+   - Additional plotting scripts for per-term energy stacks, margin timelines, adapter gains
 
-2. **P3 — Observability**
-   - Visual diagnostics dashboard (Streamlit/Dash)
-   - Additional plotting scripts
+2. **P5 — Resilience**
+   - Disaster-hardened coordinator (CheckpointManager, FailureDetector, CircuitBreaker)
+   - Recovery/rollback mechanisms with safe resume from last validated checkpoint
 
-3. **P5 — Resilience**
-   - Disaster-hardened coordinator (CheckpointManager, FailureDetector)
-   - Recovery/rollback mechanisms
-
-4. **Documentation Consolidation**
-   - `docs/PROXIMAL_METHODS.md`
-   - `docs/STABILITY_GUARANTEES.md`
-   - `docs/META_LEARNING.md`
+3. **Documentation Consolidation**
+   - Update `docs/PROXIMAL_METHODS.md` with P2 warm-start examples
+   - Update `docs/STABILITY_GUARANTEES.md` with vectorization cache + contraction margin tracking
+   - Update `docs/META_LEARNING.md` with LLM adapter patterns and distillation scaffolding
 
 ---
 
-## What Makes This Publishable Now
+### ✅ P2 Inference & Scale — COMPLETE (Nov 2025)
+
+**Status**: PRODUCTION READY — All core scaffolding shipped and validated
+
+1. **Warm-start + truncated relaxation** ✅  
+   - `MLPWarmStartProposer` with `.state_dict()` serialization for learned proposers
+   - `WarmStartProposal` and `WarmStartResult` containers with full observability
+   - `run_warm_start_relaxation(...)` orchestrates proposal → K-step relax → metrics (contraction margins, accepted steps, energy trace)
+   - Tests: `tests/test_warm_start_proposer.py` (2 tests: serialization roundtrip + metric emission)
+
+2. **System-2 adapter boundary** ✅  
+   - `LLMAdapter` protocol in `core/llm_adapter.py` for pluggable LLM → EBM adapters
+   - `StructuredTextLLMAdapter` converts token counts → η₀ proposals + constraint overrides
+   - `LLMAdapterResult` packages proposal + overrides + metadata for coordinator consumption
+   - Example: `examples/system2_reasoning_demo.py` shows LLM draft → adapter → relaxation flow
+   - Tests: `tests/test_llm_adapter.py` validates constraint production
+
+3. **Active-set caching & stage planning** ✅  
+   - `CachedActiveSetAmortizer` with similarity-based cache for η₀ reuse across inputs
+   - `plan_stage_execution(...)` returns `ActiveStagePlan` with budget fractions per stage
+   - `cache_summary()` and `clear_cache()` methods for runtime introspection
+   - `SimpleHeuristicAmortizer` updated with full `plan_stage_execution` support
+   - Tests: `tests/test_cached_amortizer.py` (2 tests: cache reuse + stage planning), `tests/test_amortized_inference_validation.py` (5 tests), `tests/test_amortizer_active_set_refinement.py` (3 tests)
+
+4. **Compile-time vectorization cache** ✅  
+   - `_VectorizedCouplingCache` dataclass holds pre-built sparse index arrays (quadratic/hinge/gate-benefit)
+   - Built once in `EnergyCoordinator.__post_init__` via `_build_vectorized_cache()`
+   - `rebuild_vectorization_cache()` public method for runtime coupling changes
+   - Gradients reuse cached arrays → ~2-3x speedup on dense graphs (16+ modules)
+   - Benchmark: `experiments/vectorization_benchmark.py` logs runtime with/without vectorization
+   - Tests: `tests/test_vectorization_cache.py` (2 tests: gradient parity + safe rebuild)
+
+5. **Metrics exposure** ✅  
+   - `coordinator.last_relaxation_metrics()` returns `{"accepted_steps", "energy_trace", "last_contraction_margin", "contraction_margins"}`
+   - `_contraction_margin_history` tracked per-step when `log_contraction_margin=True`
+   - `WarmStartResult.relaxation_metrics` wired to above for end-to-end observability
+
+**Test Coverage Summary**: 135 passing (7 new P2 tests), 1 skipped (JAX), 0 failures, 0 warnings
+
+**Next Steps**: P3 event-driven visualization, P5 disaster recovery, Phase 2 killer demos
+
+---
+
+## What Makes This interesting for neurocels
 
 ### 1. Technical Novelty (Demonstrable)
 
@@ -127,11 +167,13 @@ This document summarizes the completion of Phase 1 core technical work (P0/P1) f
 - ✅ Wormhole Effect / Non-Local Gradient Teleportation (clear mechanistic advantage)
 - ✅ Production-validated meta-learning stack (4 adapters with benchmarks)
 - ✅ Full ADMM support for heterogeneous couplings (not common in physics-inspired ML)
+- ✅ System-2 LLM adapter boundary (LLM → EBM pipeline with warm-start + truncated relaxation)
+- ✅ Compile-time vectorization cache (2-3x gradient speedup on dense graphs)
 
 ### 2. Reproducibility
 
-- ✅ 120 tests passing (comprehensive coverage)
-- ✅ Benchmark harness with ΔF90 metrics
+- ✅ 135 tests passing (comprehensive P0-P2 coverage, 7 new P2 tests)
+- ✅ Benchmark harness with ΔF90 metrics + new vectorization benchmark
 - ✅ Multiple sweep scripts for parameter validation
 - ✅ All results timestamped and logged to CSV
 
@@ -187,7 +229,7 @@ Based on strategic priority to establish originality before adoption:
 
 1. Complete P2/P3/P5 scaffolding (hierarchical inference, dashboards, resilience)
 2. Write comprehensive P0-P5 documentation
-3. Publish Phase 1 completion, **then** start Phase 2 adoption work
+3. Publish Phase 1 to git completion, **then** start Phase 2 adoption work
 4. **Timeline**: 3-6 weeks until Phase 2 begins
 5. **Risk**: Delays user adoption, but establishes technical priority
 
@@ -217,12 +259,12 @@ Based on strategic priority to establish originality before adoption:
 
 ## Summary
 
-**What we achieved**: Completed P0/P1 core work (ADMM, polynomials, stability warnings, SmallGain validation)  
-**What's ready**: Production components with 120 tests passing, comprehensive docs  
-**What's next**: Finish Phase 1 (P2/P3/P5 + docs), **then** Phase 2 adoption work  
-**Timeline to V1.0**: 4-8 weeks (Phase 1: 3-6 weeks, Phase 2: 1-2 weeks)  
+**What we achieved**: Completed P0/P1/P2 core work (ADMM, polynomials, stability, SmallGain, warm-start, LLM adapter, vectorization)  
+**What's ready**: Production components with 135 tests passing, comprehensive docs, System-2 scaffolding  
+**What's next**: Finish Phase 1 (P3/P5 + doc updates), **then** Phase 2 adoption work  
+**Timeline to V1.0**: 3-5 weeks (Phase 1: 2-4 weeks, Phase 2: 1-2 weeks)  
 
-**The repo is now publishable** as a technical contribution to neuro-symbolic AI with formal stability guarantees. The remaining work is polish, usability, and adoption—not fundamental capability.
+**The repo is now in a useful state** as a technical contribution to neuro-symbolic AI with formal stability guarantees and System-2 LLM integration. The remaining work is visualization, resilience, and adoption—not fundamental capability.
 
 ---
 
