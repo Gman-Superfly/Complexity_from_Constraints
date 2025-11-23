@@ -3,17 +3,6 @@
 **📖 MUST READ**: [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — Philosophy, motivation, and the five equations.
 
 
-## The "Wormhole Effect" (Gradient Teleportation)
-
-Why does this system solve problems that standard sparse networks get stuck on? It uses a mechanism we call **Non-Local Gradient Teleportation** (or the "Wormhole Effect").
-
-- **Standard Physics**: If a gate is closed ($\eta=0$), the connection is broken. No force can pass through, so the system can't "feel" that opening the gate would be good. It gets stuck in a local minimum.
-- **This Framework**: The `GateBenefitCoupling` applies a gradient force to a closed gate proportional to the **potential** energy saving of opening it (`contrib = -weights * delta`).
-- **The Result**: The future "reaches back" and pulls a completely inactive module into existence if the *predicted* benefit is high enough. This is **causal retro-propagation without an active channel**.
-
-It solves the "Zero-Gradient Problem": *How do you learn to open a door if you never walk through it?* 
-**Answer**: You let the value of the room behind it pull the handle.
-
 ## Code in this repo
 Small, composable modules coordinated by a global free-energy objective, with sparse non-local couplings that provide "future-like" corrections. Each module exposes an order parameter (η) and a local energy F(η; c). Composition = Σ F_local + Σ F_couple. The system seeks low-energy, coherent behavior without hard-coding global rules.
 
@@ -44,6 +33,17 @@ contains ideas and code from other Gman-Superfly repos and Abstractions by Furla
   - `max_term_norm_ratio`: tolerance above the target before scaling kicks in.
   - `term_weight_floor` / `term_weight_ceiling`: clamp how far auto-scaling can push weights (prevents runaway boosts).
   - For critical terms, override `constraints["term_weights"]` or supply a custom `WeightAdapter` to run your own strategy.
+
+  ## The "Wormhole Effect" (Gradient Teleportation)
+
+Why does this system solve problems that standard sparse networks get stuck on? It uses a mechanism we call **Non-Local Gradient Teleportation** (or the "Wormhole Effect").
+
+- **Standard Physics**: If a gate is closed ($\eta=0$), the connection is broken. No force can pass through, so the system can't "feel" that opening the gate would be good. It gets stuck in a local minimum.
+- **This Framework**: The `GateBenefitCoupling` applies a gradient force to a closed gate proportional to the **potential** energy saving of opening it (`contrib = -weights * delta`).
+- **The Result**: The future "reaches back" and pulls a completely inactive module into existence if the *predicted* benefit is high enough. This is **causal retro-propagation without an active channel**.
+
+It solves the "Zero-Gradient Problem": *How do you learn to open a door if you never walk through it?* 
+**Answer**: You let the value of the room behind it pull the handle.
 
 ### WeightAdapter hook (meta-training)
 
