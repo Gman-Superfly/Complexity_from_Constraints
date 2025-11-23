@@ -65,6 +65,8 @@ Added optional **monotonic energy assertion** feature to `EnergyCoordinator` for
 - Adaptive methods (ADMM, operator-splitting)
 - Homotopy schedules
 
+Origin/prototype for orthogonal (tangent‑plane) noise: Normalized Dynamics (Normalized_Dynamic_OPT) by Gman‑Superfly — `https://github.com/Gman-Superfly/Normalized_Dynamic_OPT`.
+
 ## How It Works
 
 ```python

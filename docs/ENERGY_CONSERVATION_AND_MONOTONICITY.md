@@ -148,6 +148,7 @@ The assertion is automatically skipped when it doesn't conceptually apply:
      ```
      If the Hessian H has negative eigenvalues in the tangent space (saddle point or negative curvature direction), z_⊥ᵀ H z_⊥ < 0 can cause F to increase.
    - **Action**: Keep assertion **disabled** when `noise_magnitude > 1e-12`.
+   - Origin/prototype: Normalized Dynamics (Normalized_Dynamic_OPT) by Gman‑Superfly — `https://github.com/Gman-Superfly/Normalized_Dynamic_OPT`.
    
    ```python
    # Exploration mode: assertion auto-disabled by guard condition
