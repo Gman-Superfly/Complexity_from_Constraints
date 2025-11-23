@@ -180,9 +180,12 @@ If you use this repository in your research, please cite:
 Goldman, Oscar — Shogu Research Group @ Datamutant.ai (subsidiary of 温心重工業). “Complexity from Constraints.” 2025.  
 Code and documentation: see `README.md` and `Complexity_from_Constraints.md`.
 
----
 
-## EXTENSIONS
+
+=================
+---
+=================
+## EXTENSIONS (To-Do)
 
 ## 10) Orthogonal/Tangent‑Plane Noise for GSPO‑token (Online Exploration)
 
