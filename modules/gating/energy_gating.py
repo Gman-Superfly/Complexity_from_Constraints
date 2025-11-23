@@ -48,6 +48,9 @@ class EnergyGatingModule(EnergyModule):
     a: float = 0.1   # local energy weights
     b: float = 0.1
     use_hazard: bool = True  # if False, fall back to logistic σ(k*net)
+    # Optional straight-through estimator (hard forward, soft formula retained internally)
+    straight_through: bool = False
+    st_threshold: float = 0.5
 
     def compute_eta(self, x: Any) -> OrderParameter:
         gain = float(self.gain_fn(x))
@@ -55,10 +58,16 @@ class EnergyGatingModule(EnergyModule):
         if self.use_hazard:
             lam = _softplus(self.k * net)
             # one-step open probability from hazard
-            eta = 1.0 - math.exp(-lam)
+            eta_soft = 1.0 - math.exp(-lam)
         else:
             # logistic fallback
-            eta = _sigmoid(self.k * net)
+            eta_soft = _sigmoid(self.k * net)
+        # Optional straight-through: hard forward decision for measurement/attribution paths
+        if self.straight_through:
+            eta_hard = 1.0 if eta_soft >= float(self.st_threshold) else 0.0
+            eta = eta_hard
+        else:
+            eta = eta_soft
         assert 0.0 <= eta <= 1.0, "η must be within [0, 1]"
         return float(eta)
 

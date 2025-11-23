@@ -20,6 +20,7 @@ import math
 
 from core.interfaces import EnergyModule, OrderParameter
 from .apc import evaluate_basis as apc_eval, evaluate_basis_derivatives as apc_eval_d
+from .apc import evaluate_basis as apc_eval_values  # alias for clarity
 
 __all__ = ["PolynomialEnergyModule"]
 
@@ -72,12 +73,14 @@ class PolynomialEnergyModule(EnergyModule):
         coeff_key: Constraints key where the coefficient list is stored.
                    If not present, defaults to zeros except bias (P0)=0.0.
                    For stability, consider positive coefficients on even orders.
+        normalize_domain: Map η∈[0,1] → ξ∈[-1,1] via ξ=2η−1 (default True). If False, evaluate basis at ξ=η.
     """
 
     degree: int = 4
     basis: Literal["legendre", "apc"] = "legendre"
     coeff_key: str = "poly_coeffs"
     apc_basis_key: str = "apc_basis"
+    normalize_domain: bool = True
 
     def compute_eta(self, x: Any) -> OrderParameter:
         """Pass-through of η from input x (expects float ∈ [0,1])."""
@@ -101,7 +104,7 @@ class PolynomialEnergyModule(EnergyModule):
     def local_energy(self, eta: OrderParameter, constraints: Mapping[str, Any]) -> float:
         assert 0.0 <= eta <= 1.0, "η must be within [0,1]"
         coeffs = self._get_coeffs(constraints)
-        xi = 2.0 * float(eta) - 1.0
+        xi = 2.0 * float(eta) - 1.0 if self.normalize_domain else float(eta)
         if self.basis == "legendre":
             P = _legendre_values(xi, self.degree)
             energy = 0.0
@@ -119,7 +122,7 @@ class PolynomialEnergyModule(EnergyModule):
     def d_local_energy_d_eta(self, eta: OrderParameter, constraints: Mapping[str, Any]) -> float:
         assert 0.0 <= eta <= 1.0, "η must be within [0,1]"
         coeffs = self._get_coeffs(constraints)
-        xi = 2.0 * float(eta) - 1.0
+        xi = 2.0 * float(eta) - 1.0 if self.normalize_domain else float(eta)
         if self.basis == "legendre":
             dPdxi = _legendre_derivatives(xi, self.degree)
             dE_dxi = 0.0
@@ -131,9 +134,21 @@ class PolynomialEnergyModule(EnergyModule):
                 raise ValueError("APC basis requested but no 'apc_basis' provided in constraints")
             dvals = apc_eval_d(B, xi)
             dE_dxi = float(sum(c * dv for c, dv in zip(coeffs, dvals)))
-        # dξ/dη = 2
-        dE_deta = 2.0 * dE_dxi
+        # dξ/dη = 2 if normalized, else 1
+        dE_deta = (2.0 if self.normalize_domain else 1.0) * dE_dxi
         assert math.isfinite(dE_deta), "gradient not finite"
         return float(dE_deta)
+
+    def get_basis_values(self, eta: OrderParameter, constraints: Mapping[str, Any]) -> List[float]:
+        """Return current basis values φ_k(ξ) for monitoring (degree+1 length)."""
+        assert 0.0 <= eta <= 1.0, "η must be within [0,1]"
+        xi = 2.0 * float(eta) - 1.0 if self.normalize_domain else float(eta)
+        if self.basis == "legendre":
+            return _legendre_values(xi, self.degree)
+        B = constraints.get(self.apc_basis_key, None)
+        if B is None:
+            raise ValueError("APC basis requested but no 'apc_basis' provided in constraints")
+        vals = apc_eval_values(B, xi)
+        return [float(v) for v in vals[: self.degree + 1]]
 
 

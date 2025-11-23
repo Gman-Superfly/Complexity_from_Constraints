@@ -1,0 +1,3 @@
+run_id,config,sg_rho,sg_dw,adapter,n,delta_f90_mean,delta_f90_median,wall_time_mean_s,wall_time_median_s,energy_final_mean,compute_cost_mean_s,redemption_gain_mean,total_backtracks_mean,last_backtracks_mean
+logit_ls_dense_off,adaptive,,,none,1,65.0,65.0,0.2515991000691429,0.2515991000691429,0.031031756592163083,0.2515991000691429,2.520913411651655,0.0,0.0
+logit_ls_dense_on,adaptive,,,none,1,66.0,66.0,0.2586361999856308,0.2586361999856308,0.21600029929251685,0.2586361999856308,1.7371543621828534,0.0,0.0

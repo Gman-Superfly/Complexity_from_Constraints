@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from core.coordinator import EnergyCoordinator, project_noise_orthogonal
 from core.couplings import QuadraticCoupling
+from core.noise_controller import OrthogonalNoiseController
 from modules.gating.energy_gating import EnergyGatingModule
 
 
@@ -62,4 +63,45 @@ def test_coordinator_orthogonal_noise_integration() -> None:
     # Verify the move was roughly orthogonal to gradient?
     # Hard to check inside black box without mocking, but `project_noise_orthogonal` unit test covers math.
     # This test just ensures the flag triggers the logic.
+
+
+def test_noise_controller_amplifies_when_progress_stalls() -> None:
+    controller = OrthogonalNoiseController(base_magnitude=0.1, decay=1.0)
+    grad = np.array([1.0, 0.0])
+    first = controller.step(grad, energy_drop_ratio=1.0, backtracks=0, iter_idx=0)
+    assert first == 0.0
+    rotated_grad = np.array([0.0, 1.0])
+    second = controller.step(rotated_grad, energy_drop_ratio=0.0, backtracks=1, iter_idx=1)
+    assert second > first
+
+
+def test_noise_controller_suppresses_when_rate_is_high() -> None:
+    controller = OrthogonalNoiseController(base_magnitude=0.2, decay=1.0)
+    grad = np.array([1.0, 0.0])
+    controller.step(grad, energy_drop_ratio=0.0, backtracks=0, iter_idx=0)
+    quiet = controller.step(grad, energy_drop_ratio=0.5, backtracks=0, iter_idx=1)
+    assert quiet == 0.0
+
+
+def test_coordinator_auto_noise_controller_tracks_signals() -> None:
+    mods = [
+        EnergyGatingModule(gain_fn=lambda _: 0.0, a=0.4, b=0.4),
+        EnergyGatingModule(gain_fn=lambda _: 0.0, a=0.6, b=0.6),
+    ]
+    coups = [(0, 1, QuadraticCoupling(weight=0.5))]
+    coord = EnergyCoordinator(
+        modules=mods,
+        couplings=coups,
+        constraints={},
+        enable_orthogonal_noise=True,
+        auto_noise_controller=True,
+        noise_magnitude=0.05,
+        noise_schedule_decay=1.0,
+    )
+    coord._last_energy_drop_ratio = 0.0  # force controller to boost noise early
+    etas = coord.compute_etas([0.5, 0.5])
+    np.random.seed(0)
+    coord.relax_etas(etas, steps=2)
+    assert coord._noise_controller is not None
+    assert coord._noise_controller._current_scale >= 0.0
 

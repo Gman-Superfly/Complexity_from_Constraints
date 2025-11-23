@@ -3,6 +3,17 @@
 **📖 MUST READ**: [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — Philosophy, motivation, and the five equations.
 
 
+## The "Wormhole Effect" (Gradient Teleportation)
+
+Why does this system solve problems that standard sparse networks get stuck on? It uses a mechanism we call **Non-Local Gradient Teleportation** (or the "Wormhole Effect").
+
+- **Standard Physics**: If a gate is closed ($\eta=0$), the connection is broken. No force can pass through, so the system can't "feel" that opening the gate would be good. It gets stuck in a local minimum.
+- **This Framework**: The `GateBenefitCoupling` applies a gradient force to a closed gate proportional to the **potential** energy saving of opening it (`contrib = -weights * delta`).
+- **The Result**: The future "reaches back" and pulls a completely inactive module into existence if the *predicted* benefit is high enough. This is **causal retro-propagation without an active channel**.
+
+It solves the "Zero-Gradient Problem": *How do you learn to open a door if you never walk through it?* 
+**Answer**: You let the value of the room behind it pull the handle.
+
 ## Code in this repo
 Small, composable modules coordinated by a global free-energy objective, with sparse non-local couplings that provide "future-like" corrections. Each module exposes an order parameter (η) and a local energy F(η; c). Composition = Σ F_local + Σ F_couple. The system seeks low-energy, coherent behavior without hard-coding global rules.
 
@@ -38,6 +49,24 @@ contains ideas and code from other Gman-Superfly repos and Abstractions by Furla
 
 `EnergyCoordinator` exposes an optional `WeightAdapter` protocol so external trainers can tune per-term weights (GradNorm-style). 
 (fun stuff to be added here)
+```python
+# Small-Gain stability-margin allocator ✅ PRODUCTION READY
+from core.weight_adapters import SmallGainWeightAdapter
+coord = EnergyCoordinator(
+    modules=mods,
+    couplings=coups,
+    constraints={},
+    weight_adapter=SmallGainWeightAdapter(
+        budget_fraction=0.7,   # spend ≤ 70% of available margin (validated optimal)
+        max_step_change=0.10,  # per-step clamp (validated: 0.10 for energy, 0.20 for speed)
+        floor=0.1,             # hard lower bound for weights
+        ceiling=3.0,           # hard upper bound for weights
+        ema_alpha=0.3,         # smooth value/cost ratios
+    ),
+    stability_guard=True,      # required for margin tracking
+)
+```
+
 ```python
 class MyAdapter:
     def step(self, term_grad_norms, energy, current):
@@ -134,6 +163,41 @@ Notes:
 - Keep `noise_magnitude=0.0` for reproducible baselines; set > 0 for search/robustness runs.
 - See `tests/test_orthogonal_noise.py` for math checks and integration behavior.
 
+#### Automatic orthogonal-noise controller
+Set `auto_noise_controller=True` to let the coordinator adapt the instantaneous noise magnitude based on convergence signals (gradient rotation, stalled ΔF, and recent backtracks). The controller treats `noise_magnitude` as the maximum budget and anneals it via `noise_schedule_decay`.
+
+```python
+coord = EnergyCoordinator(
+    modules=mods,
+    couplings=coups,
+    constraints={},
+    enable_orthogonal_noise=True,
+    auto_noise_controller=True,
+    noise_magnitude=5e-2,      # max magnitude (controller scales [0, 1])
+    noise_schedule_decay=0.995 # optional annealing
+)
+```
+
+The controller keeps determinism when progress is healthy (noise≈0) and automatically boosts exploration when ΔF stalls, gradients rotate sharply, or repeated backtracks indicate a curved valley. Set `auto_noise_controller=False` to fall back to the static magnitude path.
+
+#### Uncertainty-gated gate costs
+Set `enable_uncertainty_gate=True` to tighten or relax gate costs automatically using AGM/uncertainty metrics computed from the accepted energy history. When convergence is smooth (high rate, low uncertainty) gate costs are relaxed to encourage exploitation; when energy stalls or uncertainty spikes they are tightened to keep expansion rare.
+
+```python
+coord = EnergyCoordinator(
+    modules=mods,
+    couplings=coups,
+    constraints={},
+    enable_uncertainty_gate=True,
+    gate_cost_relax_scale=0.85,   # multiplier applied in stable regimes
+    gate_cost_tighten_scale=1.2,  # multiplier when rate is low / uncertainty high
+    gate_cost_floor=5e-3,
+    gate_cost_smoothing=0.3,
+)
+```
+
+The controller works per-gate and composes with the homotopy helpers, so continuation schedules and uncertainty control can be active simultaneously.
+
 ### Energy Conservation and Monotonic Energy Assertions
 `EnergyCoordinator` enforces a **monotonic energy assertion** by default (`assert_monotonic_energy=True`) during deterministic gradient descent. This aligns with the repo’s energy‑minimization goal and catches gradient bugs, numerical instability, or misconfigured couplings early. Built‑in guards auto‑skip the assertion when it doesn’t conceptually apply.
 
@@ -186,19 +250,81 @@ See also: `core/coordinator.py` (enable_orthogonal_noise, noise_magnitude), `tes
 
 - `EnergyCoordinator` now defaults to `use_analytic=True`. All shipped modules/couplings implement analytic gradients, and quadratic / hinge / gate-benefit families have vectorized paths (`use_vectorized_*`) to avoid Python loops on large graphs.
 - Adaptive coordinate descent is built in: set `adaptive_coordinate_descent=True` to warm-start with coordinate updates when ΔF stalls, then fall back to gradient steps.
-- Operator-splitting/prox mode: set `operator_splitting=True` to enable block‑prox updates (locals + incident couplings). Tunables: `prox_tau`, `prox_steps`. Quadratic/hinge use closed‑form pairwise prox; gate‑benefit uses projected update.
-- ADMM mode (experimental, quadratic focus): set `use_admm=True` with `admm_rho`, `admm_steps`, `admm_step_size`. Introduces auxiliary differences per quadratic edge and alternates s/η/u updates with a monotone acceptance guard.
-  - Hinge family is supported in ADMM via nonnegative auxiliary gaps on `β η_j − α η_i`; other nonquadratic factors (e.g., gate‑benefit) participate via their gradients in the η‑update.
+- Operator-splitting/prox mode: set `operator_splitting=True` to enable block‑prox updates (locals + incident couplings). Tunables: `prox_tau`, `prox_steps`, and optional `prox_block_mode="star"` to update each module together with its adjacent couplings (Jacobi-style block pass). Quadratic/hinge use closed‑form pairwise prox; gate‑benefit uses projected update.
+- ADMM mode (production-ready ✅): set `use_admm=True` with `admm_rho`, `admm_steps`, `admm_step_size`. Introduces auxiliary differences per quadratic edge and alternates s/η/u updates with a monotone acceptance guard.
+  - **All coupling families supported**: Quadratic, DirectedHinge, AsymmetricHinge, GateBenefitCoupling, DampedGateBenefitCoupling ✅
+  - Hinge family: nonnegative auxiliary gaps on `β η_j − α η_i`.
+  - Gate-benefit family: prox‑linear gate update with damping (set `admm_gate_prox=True`, `admm_gate_damping≈0.5`).
+  - Tests: `test_admm_*.py` validate energy parity vs gradient descent across all coupling types.
 - Stability guard (optional): set `stability_guard=True` to cap step size using a conservative Gershgorin-style Lipschitz bound. Tunables: `stability_cap_fraction` (default 0.9), `log_contraction_margin=True` to record a per‑step margin; compatible with line search.
 - Coupling auto-cap: set `stability_coupling_auto_cap=True` with `stability_coupling_target` (desired Lipschitz bound). Coupling term weights are temporarily scaled so the estimated Lipschitz stays below the target; shows up in EnergyBudgetTracker logs as lower `energy:coup:*`.
 - Homotopy / continuation: set `homotopy_coupling_scale_start=<0..1>` and `homotopy_steps` to scale coupling term weights from a gentle start (e.g., 0.2) up to 1.0 over the first `homotopy_steps` iterations. Use `homotopy_term_scale_starts={"coup:GateBenefitCoupling":0.3, ...}` for per-term ramps, and `homotopy_gate_cost_scale_start` to temporarily raise/lower gate costs before settling to the target configuration.
+- Mirror/logit η updates (optional, gradient mode): set `use_logit_updates=True` to update in ζ=logit(η) space (bounded mirror map). This is intended for boundary stability (reduces clamp artifacts near 0/1), not speed. Tune with a smaller `step_size` than usual. Keep off by default unless you specifically see boundary issues.
 
 ### Observability helpers
 - Per‑step relaxation traces: `RelaxationTracker(name, run_id).attach(coord)` then `flush()` after relaxation.
+- Per‑η logging (optional): `RelaxationTracker(log_per_eta=True)` adds `eta:<idx>` columns for APC fitting/diagnostics.
 - Per-step energy budget: `EnergyBudgetTracker(run_id="...").attach(coord)` logs per-term `energy:*`, `grad_norm:*`, backtracks and optional `contraction_margin` to CSV; call `flush()` after relaxation. Plot with `uv run python -m experiments.plot_energy_budget --input logs/energy_budget.csv --metric energy:local:YourModule`.
+- Additional telemetry fields (when available):
+  - `homotopy_scale`, `homotopy_backoffs` (continuation schedule and backoffs)
+  - `poly_corr_max:poly:<idx>`, `poly_corr_warn:poly:<idx>` (basis decorrelation monitor)
+  - `margin_warn` (1 when `contraction_margin` < configured threshold)
+- KPI fields: trackers now emit `compute_cost` (wall-time delta between accepted steps) and `redemption_gain = max(ΔF, 0)/compute_cost`, so you can rank runs by energy saved per unit compute.
 - Lipschitz details for allocator/telemetry: set `expose_lipschitz_details=True` to compute a Gershgorin-like bound with components exposed as a dict: `L_est`, `row_sums`, `row_targets`, `row_margins`, `global_margin`, `family_costs`, and `edge_costs`. If your `weight_adapter` defines attributes `edge_costs`, `row_margins`, or `global_margin`, the coordinator injects these per-step for allocator policies.
 - Torch/JAX backends support the same Landau-style modules (gating, sequence, connectivity, Nash) plus quadratic/hinge/gate-benefit couplings, so you can offload relaxation with `uv run pytest tests/test_torch_backend.py` / `tests/test_jax_backend.py` when those extras are installed.
 - For a complete performance playbook (ΔF90 benchmarks, profiler snippets, remaining ideas) see `docs/speed_up_tweaks.md`.
+
+SmallGain allocator — Production Status ✅
+- **Status**: PRODUCTION READY (validated on baseline + dense scenarios)
+- **Performance**: 
+  - Matches GradNorm on baseline (ΔF90=10) with **4x better final energy**
+  - 40% faster than GradNorm on dense graphs (ΔF90=12 vs 20) with **4.4x better final energy**
+  - 50-55% reduction in ΔF90 vs vanilla analytic baseline
+- **Validated Defaults**: 
+  - Budget fraction ρ = 0.7 (spend ≤ 70% of stability margin)
+  - Per-step max Δweight = 0.10 (optimal for final energy quality)
+  - Speed variant: Δweight = 0.20 (30% faster ΔF90 with 6% energy loss)
+- **Full validation results**: See `docs/SMALLGAIN_VALIDATION_FINAL.md`
+- **Tuning**: Use `experiments/sweeps/sweep_smallgain.py` for domain-specific optimization
+
+### Running tests (uv environment)
+- Full suite:
+  - `uv run -m pytest tests -v --tb=short`
+- Single file:
+  - `uv run -m pytest tests\test_monotonic_energy.py -v`
+- Single test:
+  - `uv run -m pytest tests\test_monotonic_energy.py::test_monotonic_energy_can_be_disabled -q`
+
+If pytest isn’t installed in the current env:
+- `uv run --with pytest -m pytest tests -v`
+
+Script alias:
+- After `pyproject.toml` adds `[tool.uv.scripts] test = "pytest -v --tb=short"`, you can run:
+  - `uv run -s test`
+
+### Homotopy scheduler (simple helpers)
+Use `core/homotopy.py` to linearly scale term weights from a gentle start to 1.0 over N steps.
+```python
+from core.homotopy import linear_scale, term_scales_from_starts
+scale = linear_scale(start=0.2, total_steps=50, iter_idx=t)  # → [0.2..1.0]
+per_term = term_scales_from_starts({"coup:QuadraticCoupling": 0.3}, total_steps=50, iter_idx=t)
+```
+
+### CompressionEnergyModule
+Add a compression target with an optional quartic term:
+```python
+from modules.compression.compression_energy import CompressionEnergyModule
+mod = CompressionEnergyModule(a=1.0, b=0.2, target_default=0.6)
+eta = mod.compute_eta(x=0.55)  # treat x as observed compression ratio in [0,1]
+E = mod.local_energy(eta, constraints={"compression_target": 0.6})
+```
+
+### Plotting scripts (observability)
+Quick plots for per-step metrics from CSV logs:
+- Budget vs spend and contraction margin:
+  - `uv run python -m experiments.plots.plot_budget_vs_spend --input logs/energy_budget.csv --run_id demo`
+- AGM and uncertainty timelines:
+  - `uv run python -m experiments.plots.plot_agm_uncertainty --input logs/energy_budget.csv --run_id demo`
 
 ## Hypothesis tests to run
 - **Sequence redemption vs local baseline**: Compare prefix-only scoring to non-local coupling + gating; measure ΔF and earlier-position fixes with `RelaxationTracker` + `GatingMetricsLogger`.
@@ -281,7 +407,8 @@ uv run python -m experiments.auto_balance_demo [--scenarios baseline gradnorm]
 uv run python -m experiments.energy_reg_attn_ablation
 uv run python -m experiments.emergent_nash_learning
 uv run python -m experiments.branching_coexistence [--log_gating_metrics]
-uv run python -m experiments.benchmark_delta_f90 --configs default analytic vect coord adaptive prox gradnorm agm --steps 60
+uv run python -m experiments.benchmark_delta_f90 --configs default analytic vect coord adaptive prox prox_star gradnorm agm --steps 60
+uv run python -m experiments.benchmark_delta_f90 --configs vect smallgain prox prox_star --scenario dense --dense_size 32 --log_budget
 ```
 
 Summaries:
@@ -302,20 +429,89 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 - Prefer Polars for metrics and logs; avoid heavy frameworks unless clearly needed.
 
 ## Documentation quick links
-- [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — philosophy + five equations (must read).
-- [docs/README_MODULES.md](docs/README_MODULES.md) — module quick reference (interfaces, invariants).
-- [docs/README_EXPERIMENTS.md](docs/README_EXPERIMENTS.md) — experiment intent, what to log, expected signals.
-- [experiments/benchmark_delta_f90.py](experiments/benchmark_delta_f90.py) — ΔF90 benchmark harness for comparing coordinator configs (analytic vs vectorized vs coordinate descent).
-  - Presets now include `prox` (operator-splitting), `gradnorm` and `agm` (weight adapters). The CSV includes per-term fields like `energy:local:...`, `energy:coup:...`, `grad_norm:local:...`, `grad_norm:coup:...`, plus `operator_splitting` and `adapter` flags for analysis.
-- [PYDANTIC_V2_VALIDATION_GUIDE.md](PYDANTIC_V2_VALIDATION_GUIDE.md) — required patterns for entity construction/validation across repos.
-- [cf_logging/observability.py](cf_logging/observability.py) — `RelaxationTracker` for ΔF/η traces and `GatingMetricsLogger` for hazard/η/redemption CSVs.
-- Optional autograd backend: see `core/torch_backend.py` (install torch extra).
-- JAX backend prototype: `core/jax_backend.py` (install `[jax]` extra). Note this is an initial, lightly tested pass covering gating + quadratic couplings; future work will expand support/validation.
+
+### Core Philosophy & Theory
+
+- [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — philosophy + five equations (must read) + "Wormhole Effect"
+- [docs/PHASE1_COMPLETION_SUMMARY.md](docs/PHASE1_COMPLETION_SUMMARY.md) — Phase 1 completion status + roadmap
+
+### Technical Deep-Dives ✅ NEW
+
+- [docs/PROXIMAL_METHODS.md](docs/PROXIMAL_METHODS.md) — ADMM, prox operators, when to use ✅
+- [docs/STABILITY_GUARANTEES.md](docs/STABILITY_GUARANTEES.md) — Lyapunov stability, SmallGain theorem, tuning ✅
+- [docs/META_LEARNING.md](docs/META_LEARNING.md) — Adapter hierarchy (GradNorm, AGM, SmallGain, GSPO-token) ✅
+- [docs/POLYNOMIAL_BASES.md](docs/POLYNOMIAL_BASES.md) — Legendre vs aPC, conditioning benefits
+- [docs/SMALLGAIN_VALIDATION_FINAL.md](docs/SMALLGAIN_VALIDATION_FINAL.md) — SmallGain production validation ✅
+
+### Module & Experiment Guides
+
+- [docs/README_MODULES.md](docs/README_MODULES.md) — module quick reference (interfaces, invariants)
+- [docs/README_EXPERIMENTS.md](docs/README_EXPERIMENTS.md) — experiment intent, what to log, expected signals
+- [experiments/benchmark_delta_f90.py](experiments/benchmark_delta_f90.py) — ΔF90 benchmark harness
+  - Presets: `prox`, `gradnorm`, `agm`, `smallgain`
+  - CSV fields: `energy:*`, `grad_norm:*`, `operator_splitting`, `adapter` flags
+
+### Code Reference
+
+- [PYDANTIC_V2_VALIDATION_GUIDE.md](PYDANTIC_V2_VALIDATION_GUIDE.md) — entity construction/validation patterns
+- [cf_logging/observability.py](cf_logging/observability.py) — `RelaxationTracker`, `GatingMetricsLogger`, `EnergyBudgetTracker`
+- Optional backends: `core/torch_backend.py`, `core/jax_backend.py`
 
 
 ## Notes:
 Novelty vs. reinvention: Energy-based models, graphical models, and modular RL are well-studied. The sketptic view: "This is just EBMs + sparse factor graphs + active inference, rebranded." 
 What's new?... we would argue: it's the specific combination hazard-based gating + typed micro-modules + non-local couplings + explicit redemption metrics
+
+## Why this repo fills an interesting gap
+
+1. **Explicit mechanics over black boxes**  
+   - Typical EBM tutorials hide constraints inside monolithic neural nets. Here every constraint is an entity (`QuadraticCoupling`, `HingeCoupling`, `GateBenefitCoupling`, etc.) and `EnergyCoordinator` reports the gradient for each one. You literally encode “if node A rises, node B must fall” and see that tension in the logs.  
+   - Because constraints stay explicit, observability is trivial: `RelaxationTracker` and `EnergyBudgetTracker` tell you which rule is stressed, which makes the framework feel like tinkering with springs and latches instead of guessing inside a transformer.
+
+2. **Active Inference without the Bayesian wall**  
+   - Libraries such as `pymdp` demand fluency in variational free energy, factorized beliefs, and dense notation. This repo implements the same “future evidence redeems past predictions” using physics: gradients, damping, and redemption gates that lower energy when later context fixes earlier mistakes.  
+   - Engineers can watch postdiction happen numerically (`Δη_domain`, `hazard_mean`) without deriving variational bounds, making this a friendlier entry point for Active Inference behavior.
+
+3. **Control-theory safety as a first-class lesson**  
+   - Most “intro AI” repos hand-wave stability (“drop the learning rate if it explodes”). Here the roadmap ships Gershgorin bounds, small-gain allocators, Lipschitz estimators, and contraction-margin telemetry. Turning on `stability_guard=True` literally applies a Lyapunov-style cap every step.  
+   - Learners therefore see passivity and safety instrumentation inside runnable code, bridging AI practice with control theory—a gap rarely covered in public repos.
+
+4. **White-box meta-learning** ✅ PRODUCTION READY
+   - P4 adapters (GradNorm ✅, AGM ✅, GSPO-token ✅, **SmallGain** ✅) are typed strategies that observe per-term gradients and adjust weights with full transparency. When the "grammar constraint" is violated, the adapter announces the +10% weight bump; when a coupling dominates, it gets throttled.  
+   - **SmallGain** achieves 40% faster convergence on dense graphs with formal stability guarantees (validated: `docs/SMALLGAIN_VALIDATION_FINAL.md`).
+   - That demystifies "attention" and "learning rates" by showing that meta-learning is simply deciding which explicit constraint matters most at each step.
+
+5. **Accessibility through mechanics**  
+   - The combination of explicit components, physics-style redemption, built-in stability guards, and planned visual dashboards turns the repo into a “watch the physics of intelligence” lab. Once the roadmap’s real-data demo and visualizer land, it becomes the only place you can literally see an energy surface relax while tracing which rule fired. Mechanics—not tensors or Bayesian integrals—becomes the intuitive language for EBMs.
+
+## Isn’t this just a physics engine?
+Optimization makes the two domains identical: minimizing loss in ML equals lowering potential energy in physics. This repo exposes the visible springs so you can inspect them.
+
+1. **Loss ↔ potential energy** — Violated constraints stretch a spring, raising energy exactly like an error term. Relaxation is gradient descent in disguise.
+2. **Latches ↔ non-linear activations** — Mechanical latches mirror ReLU/sigmoid behavior; mixing linear springs with non-linear gates yields universal computation (Hopfield/HNN heritage).
+3. **Inference ↔ equilibrium** — We pin known values, let the whole system settle, and read the equilibrium. Stable Diffusion does this for pixels; here we do it for logic.
+4. **Historical precedent** — Hopfield and Hinton’s Nobel-recognized work formalized neural nets as statistical physics. We simply expose the forces.
+5. **Why this view matters** — Because you can point to the exact spring that’s too tight and adjust it (or let adapters do it). Black-box nets bury that tension inside millions of weights.
+
+......Boing...Boing...Boing...Boing...Boing...Boing...
+
+## How this differs from classic Hopfield networks (The "One-Shot" Explanation)
+
+Both are Energy-Based Models (EBMs) that minimize a scalar function, but they serve opposite purposes. 
+
+**Hopfield Networks** are "associative memories": they use identical units to store patterns and recall them (like a mattress relaxing into a shape).
+**Complexity from Constraints** is a "reasoning engine": it uses diverse, typed parts to solve logic puzzles, balancing conflicting rules in real-time.
+
+| Feature | Hopfield / Boltzmann Machines | Complexity from Constraints |
+| --- | --- | --- |
+| **The "Atom"** | **Identical Neurons**: Scalar pixels or spins ($s_i \in \{-1, 1\}$) interacting via symmetric weights. | **Typed Modules**: Semantic units (e.g., `SequenceModule`, `GatingModule`) that encapsulate specific behaviors (ordering, sparsity, compression). |
+| **The Physics** | **Spin Glass**: A homogeneous field of magnetic spins aligning or anti-aligning. | **Clockwork Linkage**: A heterogeneous machine with springs (quadratic costs), latches (hinges), gears (couplings), and tilting platforms (dynamic weights). |
+| **The Landscape** | **Static**: The energy landscape is fixed after training. Inference just rolls the ball downhill. | **Dynamic**: The landscape *moves* during inference. Adapters (GradNorm, AGM) reshape the hills in real-time to break deadlocks or prioritize specific constraints. |
+| **The Logic** | **Correlations**: "If A is on, B should be on" ($E = -w x_i x_j$). | **Predicates**: "If A > B, then C must cost more" (Inequalities, gate-benefits, redemption hinges). |
+| **The Goal** | **Recall**: Retrieve a stored memory from a noisy cue. | **Reasoning**: Satisfy a set of explicit, conflicting logical rules or safety constraints. |
+| **Debuggability**| **Opaque**: Why did it settle here? "Because the tensor said so." | **Transparent**: Why did it settle here? "Because the 'safety_spring' pushed back with 5.2 units of force against the 'profit_coupling'." |
+
+**Summary**: If you want to study *distributed memory*, Hopfield nets are the gold standard. If you want to engineer systems that obey *explicit rules*, explain *why* a rule triggered, and adapt those rules mid-thought (Meta-Learning), this framework is your laboratory.
 
 ### Related evidence (recent work)
 We note independent, recent work that aligns with parts of this framework. We converged on similar ideas separately; we cite these as related evidence without claiming priority:
@@ -328,12 +524,16 @@ We note independent, recent work that aligns with parts of this framework. We co
 - We use hazard-based gating (η_gate = 1 − exp(−softplus(k·net))) as a smooth relaxation of discrete open/close decisions. During measurement we apply soft blending; for attribution or deployment we can apply a hard threshold (straight‑through–like), yielding a practical route to solve discrete selection with continuous optimization inside the coordinator (no REINFORCE).
 - This pattern mirrors “smoothing/STE” in dynamic chunking architectures (cf. H‑Net) and fits an operator‑splitting/proximal view: the gate is a differentiable control variable, while the final decision can be snapped to a discrete action without changing the inner energy formulation. See also “Related evidence (recent work)”. 
 
-### Stability "Nugget": Orthonormal Polynomials (aPC / CODE)
+Straight‑Through option (optional):
+- Construct `EnergyGatingModule(..., straight_through=True, st_threshold=0.5)` to return a hard forward decision (0/1) while keeping the smooth formulation available internally for analysis and attribution. Default remains soft (straight_through=False).
+
+### Stability "Nugget": Orthonormal Polynomials (aPC / CODE) ✅ VALIDATED
 Standard energy functions on $\eta \in [0,1]$ (using monomials $1, \eta, \eta^2...$) are often ill-conditioned, leading to optimization instability ("energy wars").
 - **The Fix**: Map $\eta \to \xi = 2\eta - 1$ and use an **orthonormal polynomial basis** (Legendre for uniform, Arbitrary Polynomial Chaos for data-driven distributions).
-- **Impact**: This diagonalizes the Hessian, smoothing the landscape and drastically reducing backtracks.
+- **Impact**: This diagonalizes the Hessian, smoothing the landscape and drastically reducing backtracks. ✅ **Validated via conditioning benchmarks** (`test_polynomial_conditioning.py`).
 - **Reference**: Wildt, N., et al. (2025). "CODE: A global approach to ODE dynamics learning." arXiv:2511.15619.
-- **Implementation**: See `modules/polynomial/apc.py` and `modules/polynomial/polynomial_energy.py`.
+- **Implementation**: See `modules/polynomial/apc.py` and `modules/polynomial/polynomial_energy.py`. Validation & usage: `docs/POLYNOMIAL_BASES.md`.
+- **Tests**: Minima parity, gradient parity, orthonormality, and **conditioning improvements** (ΔF smoothness, backtrack reduction) all validated ✅.
 
 ### Architecture philosophy: dumb core, intelligent updates & events
 - The coordinator is intentionally simple: a typed, auditable projector that minimizes an explicit energy with gates/couplings. It does not “learn”; it enforces constraints.

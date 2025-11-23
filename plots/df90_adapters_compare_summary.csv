@@ -1,0 +1,7 @@
+scenario,run_id,config,delta_f90_steps,wall_time_sec,energy_final,total_backtracks,redemption_gain
+baseline,sg_compare_baseline_analytic,analytic,22,0.0051660999888554215,-0.0003854903513545397,0,30.0564611879448
+baseline,sg_compare_baseline_gradnorm,gradnorm,10,0.003644099924713373,-0.005013535817073684,15,45.64013636931665
+baseline,sg_compare_baseline_smallgain,smallgain,10,0.0041044000536203384,-0.020079493664337807,10,44.49028765284893
+dense,sg_compare_dense_analytic,analytic,40,0.020424799993634224,0.01858157410290953,0,12.707671913466108
+dense,sg_compare_dense_gradnorm,gradnorm,20,0.03200139990076423,-0.02123512460293719,75,9.697746371452864
+dense,sg_compare_dense_smallgain,smallgain,12,0.056928499951027334,-0.0937001703047728,92,6.724338526400532

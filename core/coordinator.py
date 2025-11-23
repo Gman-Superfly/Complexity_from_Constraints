@@ -31,6 +31,9 @@ from .couplings import (
     DampedGateBenefitCoupling,
 )
 from .energy import total_energy, project_noise_orthogonal
+from .prox_utils import prox_quadratic_pair, prox_asym_hinge_pair, prox_linear_gate
+from .agm_metrics import compute_agm_phase_metrics, compute_uncertainty_metrics
+from .noise_controller import OrthogonalNoiseController
 
 EtaUpdateCallback = Callable[[List[OrderParameter]], None]
 EnergyUpdateCallback = Callable[[float], None]
@@ -68,20 +71,31 @@ class EnergyCoordinator:
     adaptive_switch_delta: float = 1e-5
     adaptive_switch_patience: int = 5
     enforce_invariants: bool = True
+    # Mirror/logit parameterization for bounded η updates (gradient mode)
+    use_logit_updates: bool = False
+    logit_epsilon: float = 1e-8
     # Operator-splitting / proximal mode
     operator_splitting: bool = False
     prox_tau: float = 0.05
     prox_steps: int = 50
+    prox_block_mode: Optional[str] = None  # e.g., "star"
     # ADMM (experimental, quadratic couplings focus)
     use_admm: bool = False
     admm_rho: float = 1.0
     admm_steps: int = 50
     admm_step_size: float = 0.05
+    admm_gate_prox: bool = True  # apply prox-linear step for gate-benefit after gradient update
+    admm_gate_damping: float = 0.5  # blend factor for prox step (0..1)
     # Homotopy / continuation
     homotopy_coupling_scale_start: Optional[float] = None  # scale applied to all coupling term weights
     homotopy_term_scale_starts: Optional[Mapping[str, float]] = None  # individual term keys -> start scale
     homotopy_gate_cost_scale_start: Optional[float] = None
     homotopy_steps: int = 0
+    # Homotopy guards (oscillation/backoff)
+    enable_homotopy_guards: bool = True
+    homotopy_backoff_factor: float = 0.5
+    homotopy_min_start_scale: float = 0.05
+    homotopy_oscillation_patience: int = 1
     # Term-weight calibration
     term_weight_floor: float = 0.0
     term_weight_ceiling: Optional[float] = None
@@ -96,6 +110,8 @@ class EnergyCoordinator:
     log_contraction_margin: bool = False
     stability_coupling_auto_cap: bool = False
     stability_coupling_target: Optional[float] = None  # desired max Lipschitz (if None, auto)
+    warn_on_margin_shrink: bool = False  # emit Python warnings when margin drops below threshold
+    margin_warn_threshold: float = 1e-6  # threshold for margin warnings
     # Lipschitz/allocator details (instrumentation for adapters/telemetry)
     expose_lipschitz_details: bool = False
     # Noise / Exploration controls
@@ -103,6 +119,18 @@ class EnergyCoordinator:
     # Note: default magnitude is 0.0 to preserve determinism unless explicitly enabled in experiments.
     noise_magnitude: float = 0.0
     noise_schedule_decay: float = 0.99  # Simple exponential decay for noise magnitude
+    auto_noise_controller: bool = False  # Adapt noise magnitude using orthogonal-noise controller
+    # Uncertainty-gated thresholds for gate costs
+    enable_uncertainty_gate: bool = False
+    gate_cost_relax_scale: float = 0.85
+    gate_cost_tighten_scale: float = 1.15
+    gate_cost_floor: float = 1e-4
+    gate_cost_ceiling: Optional[float] = None
+    gate_rate_exploit_threshold: float = 0.7
+    gate_rate_explore_threshold: float = 0.3
+    gate_uncertainty_relax_threshold: float = 0.3
+    gate_uncertainty_tight_threshold: float = 1.0
+    gate_cost_smoothing: float = 0.25
     # Energy conservation check (enabled by default; aligns with repo's monotonic energy goal)
     assert_monotonic_energy: bool = True  # Assert F_t+1 ≤ F_t in deterministic mode; guards auto-skip for noise/line-search
     monotonic_energy_tol: float = 1e-10  # Tolerance for numeric jitter
@@ -123,11 +151,25 @@ class EnergyCoordinator:
     _stability_coupling_scale: Optional[float] = field(default=None, init=False, repr=False)
     _homotopy_term_scales: Optional[dict[str, float]] = field(default=None, init=False, repr=False)
     _homotopy_gate_bases: Optional[List[float]] = field(default=None, init=False, repr=False)
+    _homotopy_runtime_start: Optional[float] = field(default=None, init=False, repr=False)
+    _homotopy_backoffs: int = field(default=0, init=False, repr=False)
     _last_lipschitz_details: Optional[dict] = field(default=None, init=False, repr=False)
+    _noise_controller: Optional[OrthogonalNoiseController] = field(default=None, init=False, repr=False)
+    _last_energy_drop_ratio: float = field(default=1.0, init=False, repr=False)
+    _gate_uncertainty_scale: float = field(default=1.0, init=False, repr=False)
+    _accepted_energy_history: List[float] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._validate_configuration()
         self._ensure_adjacency(len(self.modules))
+        if self.auto_noise_controller and self.enable_orthogonal_noise:
+            self._noise_controller = OrthogonalNoiseController(
+                base_magnitude=float(self.noise_magnitude),
+                decay=float(self.noise_schedule_decay),
+            )
+        else:
+            self._noise_controller = None
+        self._last_energy_drop_ratio = 1.0
 
     def compute_etas(self, inputs: List[Any]) -> List[OrderParameter]:
         assert len(inputs) == len(self.modules), "inputs/modules length mismatch"
@@ -169,15 +211,27 @@ class EnergyCoordinator:
         self._stability_coupling_scale = None
         self._homotopy_term_scales = None
         self._homotopy_gate_bases = None
+        controller = self._noise_controller if (self.auto_noise_controller and self.enable_orthogonal_noise) else None
+        if controller is not None:
+            controller.base_magnitude = float(self.noise_magnitude)
+            controller.decay = float(self.noise_schedule_decay)
+            controller.reset()
         homotopy_active = (
             self.homotopy_coupling_scale_start is not None
             and self.homotopy_coupling_scale_start >= 0.0
             and self.homotopy_steps > 0
         )
+        if homotopy_active and self._homotopy_runtime_start is None:
+            self._homotopy_runtime_start = float(self.homotopy_coupling_scale_start)  # runtime backoff-able
         gate_modules = [m for m in self.modules if _is_gate_module(m)]
+        if gate_modules and self._homotopy_gate_bases is None:
+            self._homotopy_gate_bases = [float(getattr(m, "cost", 0.0)) for m in gate_modules]
         stalled_steps = 0
         energy_value = self._energy_value(etas)
         prev_energy_value: Optional[float] = energy_value
+        self._gate_uncertainty_scale = 1.0
+        self._accepted_energy_history = []
+        oscillations = 0
         if self.adaptive_coordinate_descent:
             etas = self.relax_etas_coordinate(
                 etas,
@@ -187,10 +241,12 @@ class EnergyCoordinator:
             energy_value = self._energy_value(etas)
             prev_energy_value = energy_value
         for iter_idx in range(steps):
+            etas_prev = list(etas)
             L_est = None
+            gate_homotopy_scale = 1.0
             if homotopy_active:
                 t = min(1.0, iter_idx / float(self.homotopy_steps))
-                start = float(self.homotopy_coupling_scale_start)
+                start = float(self._homotopy_runtime_start if self._homotopy_runtime_start is not None else self.homotopy_coupling_scale_start)  # type: ignore[arg-type]
                 scale = start + (1.0 - start) * t
                 self._homotopy_scale = max(0.0, scale)
             if self.homotopy_term_scale_starts and self.homotopy_steps > 0:
@@ -201,13 +257,11 @@ class EnergyCoordinator:
                     term_scales[str(key)] = max(0.0, start + (1.0 - start) * t)
                 self._homotopy_term_scales = term_scales
             if self.homotopy_gate_cost_scale_start is not None and self.homotopy_steps > 0 and gate_modules:
-                if self._homotopy_gate_bases is None:
-                    self._homotopy_gate_bases = [float(m.cost) for m in gate_modules]
                 t = min(1.0, iter_idx / float(self.homotopy_steps))
                 start = float(self.homotopy_gate_cost_scale_start)
-                scale = max(0.0, start + (1.0 - start) * t)
-                for m, base in zip(gate_modules, self._homotopy_gate_bases):
-                    m.cost = float(base * scale)
+                gate_homotopy_scale = max(0.0, start + (1.0 - start) * t)
+            if gate_modules:
+                self._apply_gate_costs(gate_modules, gate_homotopy_scale)
             grads = self._grads(etas)
             # optional normalization/clipping
             if self.normalize_grads:
@@ -229,22 +283,37 @@ class EnergyCoordinator:
                 if cap > 0.0:
                     step_to_use = min(step_to_use, cap)
                     if self.log_contraction_margin:
-                        self._last_contraction_margin = (2.0 / L_est) - step_to_use
+                        margin = (2.0 / L_est) - step_to_use
+                        self._last_contraction_margin = margin
+                        # Emit warning if margin shrinks below threshold
+                        if self.warn_on_margin_shrink and margin < self.margin_warn_threshold:
+                            warnings.warn(
+                                f"Contraction margin ({margin:.2e}) below threshold ({self.margin_warn_threshold:.2e}). "
+                                f"Consider reducing step_size or coupling weights. "
+                                f"Lipschitz bound L={L_est:.2e}, safe step=2/L={2.0/L_est:.2e}, current step={step_to_use:.2e}",
+                                UserWarning,
+                                stacklevel=2
+                            )
             elif self.stability_guard and self.log_contraction_margin:
                 self._last_contraction_margin = None
             
             # Inject orthogonal noise if enabled (structure-preserving exploration)
             grad_vector = np.array(grads, dtype=float)
             noise_vector = np.zeros_like(grad_vector)
-            if self.enable_orthogonal_noise and self.noise_magnitude > 1e-9:
-                # Decay magnitude
+            current_noise_mag = 0.0
+            if self.enable_orthogonal_noise:
+                if controller is not None:
+                    current_noise_mag = controller.step(
+                        grad_vector,
+                        energy_drop_ratio=getattr(self, "_last_energy_drop_ratio", 1.0),
+                        backtracks=int(self._last_step_backtracks),
+                        iter_idx=iter_idx,
+                    )
+            else:
                 current_noise_mag = self.noise_magnitude * (self.noise_schedule_decay ** iter_idx)
-                if current_noise_mag > 1e-9:
-                    # Generate raw noise
+            if current_noise_mag > 1e-9:
                     raw_noise = np.random.normal(0, 1, size=grad_vector.shape)
-                    # Project onto null space of gradient (level set exploration)
                     noise_vector = project_noise_orthogonal(raw_noise, grad_vector)
-                    # Scale
                     noise_norm = np.linalg.norm(noise_vector)
                     if noise_norm > 1e-9:
                         noise_vector = noise_vector * (current_noise_mag / noise_norm)
@@ -256,27 +325,14 @@ class EnergyCoordinator:
                 # Standard practice: add noise to the update. 
                 # But line search needs a direction. Let's define direction d = -grad + noise
                 # Then line search along d.
-                direction = -grad_vector
-                # If noise enabled, perturb the search direction
-                if self.enable_orthogonal_noise:
-                     # Orthogonal noise doesn't affect dF/dalpha at alpha=0 (by definition dF/deta * noise = 0)
-                     # So it preserves the descent property locally!
-                     direction = direction + noise_vector
-                
-                # _step_with_backtracking expects grads, but we want to move in `direction`.
-                # The current helper assumes direction = -grads. We need to patch it or just apply update manually if noise is on.
-                # For safety/simplicity in this "nugget" phase: if noise is on, skip line search or force step.
-                # BETTER: Just add noise to the etas *after* the gradient step? 
-                # No, Langevin adds it to the update.
-                # Orthogonal noise is safe because grad dot noise = 0.
-                # So F(eta - eps*grad + sigma*noise) approx F(eta) - eps*|grad|^2 + 0 (first order)
-                # Descent is preserved.
-                
-                # Let's modify the update logic below to support explicit direction.
-                # For now, to keep diff small: if noise is active, we'll bypass the standard line search 
-                # or just add the noise to the final update if using fixed step.
-                # If line search is on, we really should search along -g + noise.
-                pass # Logic continues below
+                # Mirror/logit option: use ∂F/∂ζ = ∂F/∂η · η(1−η) to define the descent direction
+                if self.use_logit_updates:
+                    grads_eff = []
+                    for i, g in enumerate(grads):
+                        eta_i = float(max(0.0, min(1.0, etas[i])))
+                        grads_eff.append(float(g) * eta_i * (1.0 - eta_i))
+                else:
+                    grads_eff = grads
 
             # Coupling auto-cap
             coupling_scale = None
@@ -305,24 +361,43 @@ class EnergyCoordinator:
             # step
             if self.line_search:
                 # Standard Armijo along -grad direction
-                # NOTE: If orthogonal noise is enabled, we currently apply it *after* or ignore it in line search.
-                # For strict correctness, line search should support custom directions.
-                # MVP: If noise is ON, we skip line search or apply noise separately?
-                # Decision: Apply line search to the gradient part, then add noise.
-                # This is "Split Langevin": deterministic descent + stochastic diffusion.
-                etas = self._step_with_backtracking(etas, grads, step_to_use)
+                # Apply line search on grads_eff (mirror-aware if enabled), then add noise
+                etas = self._step_with_backtracking(etas, grads_eff, step_to_use)
                 if self.enable_orthogonal_noise and np.any(noise_vector):
                     # Add noise (orthogonal to gradient, so doesn't fight the descent step to first order)
                     for i in range(len(etas)):
                         etas[i] = float(max(0.0, min(1.0, etas[i] + noise_vector[i])))
             else:
+                # No line search: direct gradient update with noise blended in
                 for i in range(len(etas)):
-                    # Update: eta - step*grad + noise
-                    # noise_vector is already scaled by noise_magnitude
-                    update = -step_to_use * grads[i]
-                    if self.enable_orthogonal_noise:
-                        update += noise_vector[i]
-                    etas[i] = float(max(0.0, min(1.0, etas[i] + update)))
+                    if self.use_logit_updates and not self.line_search:
+                        # Mirror/logit update in ζ-space with η = σ(ζ); dF/dζ = dF/dη * η(1-η)
+                        eta_i = float(max(0.0, min(1.0, etas[i])))
+                        eps = float(max(self.logit_epsilon, 1e-12))
+                        # Compute current logit
+                        num = eta_i + eps
+                        den = (1.0 - eta_i) + eps
+                        z = math.log(num) - math.log(den)
+                        dF_dz = float(grads[i]) * eta_i * (1.0 - eta_i)
+                        z_new = z - step_to_use * dF_dz
+                        # Map back: σ(z) = 1 / (1 + exp(-z))
+                        if z_new >= 0.0:
+                            ez = math.exp(-z_new)
+                            eta_new = 1.0 / (1.0 + ez)
+                        else:
+                            ez = math.exp(z_new)
+                            eta_new = ez / (1.0 + ez)
+                        # Add orthogonal noise in η-space if enabled
+                        if self.enable_orthogonal_noise:
+                            eta_new = eta_new + float(noise_vector[i])
+                        etas[i] = float(max(0.0, min(1.0, eta_new)))
+                    else:
+                        # Update: eta - step*grad + noise
+                        # noise_vector is already scaled by noise_magnitude
+                        update = -step_to_use * grads[i]
+                        if self.enable_orthogonal_noise:
+                            update += noise_vector[i]
+                        etas[i] = float(max(0.0, min(1.0, etas[i] + update)))
             
             self._emit_eta(etas)
             energy_value = self._energy_value(etas)
@@ -342,8 +417,14 @@ class EnergyCoordinator:
                     stalled_steps = 0
                     prev_energy_value = self._energy_value(etas)
                     continue
-            if self.enforce_invariants:
-                self._check_invariants(etas, energy_value)
+                if self.enforce_invariants:
+                    self._check_invariants(etas, energy_value)
+            if prev_energy_value is not None:
+                drop = max(prev_energy_value - energy_value, 0.0)
+                denom = max(abs(prev_energy_value), 1e-12)
+                self._last_energy_drop_ratio = drop / denom
+            else:
+                self._last_energy_drop_ratio = 1.0
             # Optional strict monotonicity assertion (for debugging/validation in deterministic mode)
             if (
                 self.assert_monotonic_energy
@@ -361,9 +442,29 @@ class EnergyCoordinator:
                 )
             # Early stop on non-monotonic energy (guard against oscillations)
             if prev_energy_value is not None and energy_value > prev_energy_value + 1e-12:
+                # Homotopy guard: back off start scale and retry this iteration
+                if homotopy_active and self.enable_homotopy_guards and self._homotopy_runtime_start is not None:
+                    oscillations += 1
+                    if oscillations >= int(max(1, self.homotopy_oscillation_patience)):
+                        new_start = max(
+                            float(self.homotopy_min_start_scale),
+                            float(self._homotopy_runtime_start) * float(self.homotopy_backoff_factor),
+                        )
+                        if new_start < float(self._homotopy_runtime_start):
+                            self._homotopy_runtime_start = new_start
+                            self._homotopy_backoffs += 1
+                        oscillations = 0
+                    # Revert etas and continue (skip accept)
+                    etas = etas_prev
+                    energy_value = prev_energy_value
+                    continue
+                    else:
                 break
             # Emit only after acceptance
             self._emit_energy(energy_value)
+            self._record_energy_history(energy_value)
+            if self.enable_uncertainty_gate and gate_modules:
+                self._update_uncertainty_gate_scale()
             prev_energy_value = energy_value
             term_norms = self._term_grad_norms(etas)
             if self.auto_balance_term_weights:
@@ -403,6 +504,8 @@ class EnergyCoordinator:
             for m, base in zip(gate_modules, self._homotopy_gate_bases):
                 m.cost = float(base)
         self._homotopy_gate_bases = None
+        self._gate_uncertainty_scale = 1.0
+        self._accepted_energy_history = []
         self._stability_coupling_scale = None
         return etas
 
@@ -416,6 +519,8 @@ class EnergyCoordinator:
             2) Pairwise prox on couplings (closed-form for quadratic/hinge family; projected if needed).
           - Emit accepted energies only; stop if energy increases.
         """
+        if self.prox_block_mode == "star":
+            return self._relax_etas_proximal_star(etas0, steps=steps, tau=tau)
         assert tau > 0.0, "prox tau must be positive"
         etas = [float(e) for e in etas0]
         prev_energy = self._energy_value(etas)
@@ -440,19 +545,21 @@ class EnergyCoordinator:
                 key = f"coup:{coup.__class__.__name__}"
                 w_c = float(self._combined_term_weights().get(key, 1.0))
                 if isinstance(coup, QuadraticCoupling):
-                    etas[i], etas[j] = self._prox_quadratic_pair(etas[i], etas[j], coup.weight * w_c, tau)
+                    etas[i], etas[j] = prox_quadratic_pair(etas[i], etas[j], coup.weight * w_c, tau)
                 elif isinstance(coup, DirectedHingeCoupling):
-                    etas[i], etas[j] = self._prox_asym_hinge_pair(
+                    etas[i], etas[j] = prox_asym_hinge_pair(
                         etas[i], etas[j], weight=coup.weight * w_c, alpha=1.0, beta=1.0, tau=tau
                     )
                 elif isinstance(coup, AsymmetricHingeCoupling):
-                    etas[i], etas[j] = self._prox_asym_hinge_pair(
+                    etas[i], etas[j] = prox_asym_hinge_pair(
                         etas[i], etas[j], weight=coup.weight * w_c, alpha=coup.alpha_i, beta=coup.beta_j, tau=tau
                     )
                 elif isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
-                    # Linearized projected step on gate variable (i) only
-                    gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
-                    etas[i] = float(max(0.0, min(1.0, etas[i] - tau * w_c * float(gi))))
+                    # Prox for linear gate term on variable i (j unaffected)
+                        gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
+                    # For F = ... + gi*η_i (since gi = ∂F/∂η_i), prox uses coeff = -gi
+                        coeff = -float(gi) * w_c
+                    etas[i] = prox_linear_gate(etas[i], coeff, tau)
                 # else: no-op for unknown types
             # Check invariants and acceptance
             if self.enforce_invariants:
@@ -466,40 +573,79 @@ class EnergyCoordinator:
         return etas
 
     def _prox_quadratic_pair(self, x0: float, y0: float, weight: float, tau: float) -> tuple[float, float]:
-        """Closed-form prox for w*(x-y)^2 + (1/(2τ))||[x;y]-[x0;y0]||^2 with box projection."""
-        a = 2.0 * weight + (1.0 / tau)
-        b = -2.0 * weight
-        c = -2.0 * weight
-        d = 2.0 * weight + (1.0 / tau)
-        # Solve linear system [[a,b],[c,d]][x;y] = [x0/tau; y0/tau]
-        det = a * d - b * c
-        if det == 0.0:
-            return float(max(0.0, min(1.0, x0))), float(max(0.0, min(1.0, y0)))
-        inv_a = d / det
-        inv_b = -b / det
-        inv_c = -c / det
-        inv_d = a / det
-        rhs_x = x0 / tau
-        rhs_y = y0 / tau
-        x = inv_a * rhs_x + inv_b * rhs_y
-        y = inv_c * rhs_x + inv_d * rhs_y
-        return float(max(0.0, min(1.0, x))), float(max(0.0, min(1.0, y)))
+        return prox_quadratic_pair(x0, y0, weight, tau)
 
     def _prox_asym_hinge_pair(self, x0: float, y0: float, weight: float, alpha: float, beta: float, tau: float) -> tuple[float, float]:
-        """Closed-form prox for w*max(0, β y - α x)^2 + (1/(2τ))||[x;y]-[x0;y0]||^2."""
-        assert alpha >= 0.0 and beta >= 0.0
-        # Check gap at current point
-        gap0 = beta * y0 - alpha * x0
-        if gap0 <= 0.0 or weight == 0.0:
-            # No penalty region => identity prox (then project to box)
-            return float(max(0.0, min(1.0, x0))), float(max(0.0, min(1.0, y0)))
-        # Use λ_eff = 2w per gradient derivation
-        lam = 2.0 * weight
-        denom = 1.0 + tau * lam * (beta * beta + alpha * alpha)
-        g_star = (beta * y0 - alpha * x0) / denom
-        x = x0 + tau * lam * alpha * g_star
-        y = y0 - tau * lam * beta * g_star
-        return float(max(0.0, min(1.0, x))), float(max(0.0, min(1.0, y)))
+        return prox_asym_hinge_pair(x0, y0, weight, alpha, beta, tau)
+
+    def _relax_etas_proximal_star(self, etas0: List[OrderParameter], steps: int, tau: float) -> List[OrderParameter]:
+        assert tau > 0.0, "prox tau must be positive"
+        etas = [float(e) for e in etas0]
+        self._ensure_adjacency(len(etas))
+        prev_energy = self._energy_value(etas)
+        self._emit_eta(etas)
+        self._emit_energy(prev_energy)
+        for _ in range(steps):
+            cw = self._combined_term_weights()
+            for center in range(len(self.modules)):
+                block_vals = self._prox_star_block(center, etas, tau, cw)
+                for idx, val in block_vals.items():
+                    etas[idx] = float(max(0.0, min(1.0, val)))
+            if self.enforce_invariants:
+                self._check_invariants(etas)
+            F = self._energy_value(etas)
+            if F > prev_energy + 1e-12:
+                break
+            self._emit_eta(etas)
+            self._emit_energy(F)
+            prev_energy = F
+        return etas
+
+    def _prox_star_block(self, center: int, etas: List[OrderParameter], tau: float, cw: dict[str, float]) -> dict[int, float]:
+        assert self._adjacency is not None
+        block: List[int] = [center]
+        for neighbor, _ in self._adjacency[center]:
+            if 0 <= neighbor < len(etas):
+                block.append(int(neighbor))
+        block = sorted(set(block))
+        updated: dict[int, float] = {}
+        for idx in block:
+            updated[idx] = self._prox_local_single(idx, etas[idx], tau, cw)
+        for i, j, coup in self.couplings:
+            if i not in block or j not in block:
+                continue
+            key = f"coup:{coup.__class__.__name__}"
+            w_c = float(cw.get(key, 1.0))
+            xi = updated.get(i, etas[i])
+            xj = updated.get(j, etas[j])
+            if isinstance(coup, QuadraticCoupling):
+                xi, xj = prox_quadratic_pair(xi, xj, coup.weight * w_c, tau)
+            elif isinstance(coup, DirectedHingeCoupling):
+                xi, xj = prox_asym_hinge_pair(xi, xj, coup.weight * w_c, alpha=1.0, beta=1.0, tau=tau)
+            elif isinstance(coup, AsymmetricHingeCoupling):
+                xi, xj = prox_asym_hinge_pair(xi, xj, coup.weight * w_c, alpha=coup.alpha_i, beta=coup.beta_j, tau=tau)
+            elif isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
+                gi, _ = coup.d_coupling_energy_d_etas(xi, xj, self.constraints)
+                coeff = -float(gi) * w_c
+                xi = prox_linear_gate(xi, coeff, tau)
+            else:
+                continue
+            updated[i] = float(max(0.0, min(1.0, xi)))
+            updated[j] = float(max(0.0, min(1.0, xj)))
+        return updated
+
+    def _prox_local_single(self, idx: int, eta_i: float, tau: float, cw: dict[str, float]) -> float:
+        module = self.modules[idx]
+        if isinstance(module, SupportsLocalEnergyGrad):
+            grad = float(module.d_local_energy_d_eta(eta_i, self.constraints))
+        else:
+            base = float(module.local_energy(eta_i, self.constraints))
+            bumped = float(module.local_energy(min(1.0, eta_i + self.grad_eps), self.constraints))
+            grad = (bumped - base) / self.grad_eps
+        key = f"local:{module.__class__.__name__}"
+        weight = float(cw.get(key, 1.0))
+        eta_new = eta_i - tau * weight * grad
+        return float(max(0.0, min(1.0, eta_new)))
 
     # --- ADMM (experimental) for quadratic couplings ---
     def relax_etas_admm(
@@ -585,6 +731,9 @@ class EnergyCoordinator:
                 if isinstance(coup, (QuadraticCoupling, DirectedHingeCoupling, AsymmetricHingeCoupling)):
                     continue
                 w_c = float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
+                # Optionally skip gate-benefit grads if we plan a prox-linear update instead
+                if self.admm_gate_prox and isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
+                    continue
                 if isinstance(coup, SupportsCouplingGrads):
                     gi, gj = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
                     grads[i] += w_c * float(gi)
@@ -598,6 +747,25 @@ class EnergyCoordinator:
             # gradient step + projection
             for i in range(n):
                 etas[i] = float(max(0.0, min(1.0, float(etas[i]) - step_size * float(grads[i]))))
+            # optional prox-linear update for gate-benefit family on gate variable (i)
+            if self.admm_gate_prox:
+                damp = float(max(0.0, min(1.0, self.admm_gate_damping)))
+                if damp > 0.0:
+                    for i, j, coup in self.couplings:
+                        if isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
+                            w_c = float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
+                            # use analytic derivative if available to form linear prox coeff
+                            if isinstance(coup, SupportsCouplingGrads):
+                                gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
+                                coeff = -float(gi) * w_c
+                            else:
+                                base_e = float(coup.coupling_energy(etas[i], etas[j], self.constraints))
+                                bump_e = float(coup.coupling_energy(min(1.0, etas[i] + self.grad_eps), etas[j], self.constraints))
+                                gi_fd = (bump_e - base_e) / self.grad_eps
+                                coeff = -float(gi_fd) * w_c
+                            x_old = float(etas[i])
+                            x_prox = float(prox_linear_gate(x_old, coeff, step_size))
+                            etas[i] = float(max(0.0, min(1.0, (1.0 - damp) * x_old + damp * x_prox)))
             # u-update
             for k, (i, j, _w, _edge_idx) in enumerate(quad_edges):
                 u[k] += s[k] - (float(etas[i]) - float(etas[j]))
@@ -652,7 +820,7 @@ class EnergyCoordinator:
             grad_arr += np.asarray(hinge_grads, dtype=float)
         if self.use_vectorized_gate_benefits:
             grad_arr += self._gate_benefit_gradients_vectorized(etas, cw)
-        for i, j, coup in self.couplings:
+                for i, j, coup in self.couplings:
             if self.use_vectorized_quadratic and isinstance(coup, QuadraticCoupling):
                 continue
             if self.use_vectorized_hinges and isinstance(coup, (DirectedHingeCoupling, AsymmetricHingeCoupling)):
@@ -660,8 +828,8 @@ class EnergyCoordinator:
             if self.use_vectorized_gate_benefits and isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
                 continue
             w = float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
-            if isinstance(coup, SupportsCouplingGrads):
-                gi, gj = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
+                        if isinstance(coup, SupportsCouplingGrads):
+                            gi, gj = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
                 grad_arr[i] += w * float(gi)
                 grad_arr[j] += w * float(gj)
             else:
@@ -681,7 +849,7 @@ class EnergyCoordinator:
         else:
             grads = self._finite_diff_grads(etas)
         return grads
-
+    
     def relax_etas_coordinate(
         self,
         etas0: List[OrderParameter],
@@ -752,10 +920,10 @@ class EnergyCoordinator:
         base_w = np.fromiter((float(getattr(c, "weight", 0.0)) for _i, _j, c in self.couplings), dtype=float)
         term_w = np.fromiter((float(cw.get(f"coup:{c.__class__.__name__}", 1.0)) for _i, _j, c in self.couplings), dtype=float)
         weights = base_w * term_w
-        eta_arr = np.asarray(etas, dtype=float)
+            eta_arr = np.asarray(etas, dtype=float)
         diff = eta_arr[idx_i] - eta_arr[idx_j]
-        gi = 2.0 * weights * diff
-        gj = -2.0 * weights * diff
+            gi = 2.0 * weights * diff
+            gj = -2.0 * weights * diff
         np.add.at(grads, idx_i, gi)
         np.add.at(grads, idx_j, gj)
         return grads.tolist()
@@ -798,8 +966,8 @@ class EnergyCoordinator:
             if isinstance(coup, AsymmetricHingeCoupling):
                 asym_i.append(i)
                 asym_j.append(j)
-                alphas.append(float(coup.alpha_i))
-                betas.append(float(coup.beta_j))
+                    alphas.append(float(coup.alpha_i))
+                    betas.append(float(coup.beta_j))
                 key = f"coup:{coup.__class__.__name__}"
                 asym_w.append(float(getattr(coup, "weight", 0.0)) * float(cw.get(key, 1.0)))
         if asym_i:
@@ -1099,7 +1267,7 @@ class EnergyCoordinator:
 
         def _add_row_family(row: int, fam: str, amount: float) -> None:
             if amount == 0.0:
-                return
+            return
             d = per_row_family[row]
             d[fam] = float(d.get(fam, 0.0) + amount)
 
@@ -1129,7 +1297,7 @@ class EnergyCoordinator:
                     s = 1.0
                 elif -smoothing_epsilon < gap <= 0.0:
                     s = (gap + smoothing_epsilon) / smoothing_epsilon
-                else:
+            else:
                     s = 0.0
                 if s > 0.0 and w != 0.0:
                     add = 2.0 * w * s
@@ -1192,7 +1360,7 @@ class EnergyCoordinator:
                 current = family_costs.get(fam, 0.0)
                 if amount > current:
                     family_costs[fam] = float(amount)
-
+        
         # Build compact row_sums dict
         row_sums_dict = {i: float(row_sums[i]) for i in range(n)}
 
@@ -1205,6 +1373,55 @@ class EnergyCoordinator:
             "family_costs": family_costs,
             "edge_costs": {int(k): float(v) for k, v in edge_costs.items()},
         }
+
+    def _apply_gate_costs(self, gate_modules: List[EnergyModule], homotopy_scale: float) -> None:
+        if not gate_modules or not self._homotopy_gate_bases:
+            return
+        base_costs = self._homotopy_gate_bases
+        homotopy_scale = max(homotopy_scale, 0.0)
+        uncertainty_scale = max(self._gate_uncertainty_scale, 0.0)
+        total_scale = homotopy_scale * uncertainty_scale
+        if total_scale <= 0.0:
+            total_scale = 0.0
+        floor = max(self.gate_cost_floor, 0.0)
+        ceiling = self.gate_cost_ceiling
+        for module, base in zip(gate_modules, base_costs):
+            cost = float(base) * total_scale if total_scale > 0.0 else 0.0
+            cost = max(cost, floor)
+            if ceiling is not None:
+                cost = min(cost, ceiling)
+            try:
+                module.cost = float(cost)
+            except Exception:
+                continue
+
+    def _record_energy_history(self, energy: float) -> None:
+        self._accepted_energy_history.append(float(energy))
+        if len(self._accepted_energy_history) > 256:
+            self._accepted_energy_history = self._accepted_energy_history[-256:]
+
+    def _update_uncertainty_gate_scale(self) -> None:
+        if not self._accepted_energy_history:
+            return
+        metrics = compute_agm_phase_metrics(self._accepted_energy_history)
+        summary = compute_uncertainty_metrics(self._accepted_energy_history)
+        target_scale = 1.0
+        if (
+            metrics["rate"] >= self.gate_rate_exploit_threshold
+            and summary.total <= self.gate_uncertainty_relax_threshold
+        ):
+            target_scale = self.gate_cost_relax_scale
+        elif (
+            metrics["rate"] <= self.gate_rate_explore_threshold
+            or summary.total >= self.gate_uncertainty_tight_threshold
+        ):
+            target_scale = self.gate_cost_tighten_scale
+        smoothing = min(max(self.gate_cost_smoothing, 0.0), 1.0)
+        self._gate_uncertainty_scale = (
+            (1.0 - smoothing) * self._gate_uncertainty_scale + smoothing * target_scale
+        )
+        if self._gate_uncertainty_scale < 0.0:
+            self._gate_uncertainty_scale = 0.0
 
     def _emit_eta(self, etas: List[OrderParameter]) -> None:
         for cb in self.on_eta_updated:
