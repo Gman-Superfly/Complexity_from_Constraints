@@ -8,10 +8,16 @@ license: MIT
 date-released: "2025-11-20"
 repository-code: "https://github.com/Gman-Superfly/Complexity_from_Constraints"
 keywords:
-  - free energy
   - non-local couplings
   - active inference
   - modular systems
   - energy-based models
+  - energy-gated expansion
+  - orthogonal noise
+  - metric-aware noise 
+  - SmallGain
+  - GSPO-token
+  - observability
+
 
 

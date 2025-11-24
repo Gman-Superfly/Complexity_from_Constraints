@@ -1,9 +1,19 @@
 polars>=1.35
 numpy>=2.3
 networkx>=3.0
-pytest>=7.0
 
-# Optional (only for attention ablation experiment)
+# Optional backends (enable per your platform/use-case; mirrored from uv.lock extras)
+# JAX backend:
+# jax>=0.4
+# jaxlib>=0.4
+
+# PyTorch backend (e.g., attention ablation):
 # torch>=2.0
+
+# Optional (only for visualizations)
+# matplotlib>=3.8
+
+# Dev / testing
+# pytest>=7.0
 
 
