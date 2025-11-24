@@ -2,10 +2,10 @@
 
 **📖 MUST READ**: [Complexity_from_Constraints.md](Complexity_from_Constraints.md) — Philosophy, motivation, and the five equations.
 
-## 🔥 Killer Features
+## Interesting first glance features... but keep going :D
 
-- **🌀 [Wormhole Effect](docs/README_WORMHOLE.md)** — Non-local gradient teleportation: how closed gates "feel" future benefit and open automatically (solves the Zero-Gradient Problem)
-- **⚖️ [SmallGain Allocator](docs/README_SMALLGAIN.md)** — Stability-aware weight adapter with formal guarantees: 40% faster convergence on dense graphs (novel in EBM literature)
+- ** [Wormhole Effect](docs/README_WORMHOLE.md)** — Non-local gradient teleportation: how closed gates "feel" future benefit and open automatically (solves the Zero-Gradient Problem)
+- ** [SmallGain Allocator](docs/README_SMALLGAIN.md)** — Stability-aware weight adapter with formal guarantees: 40% faster convergence on dense graphs (novel in EBM literature)
 
 ## Code in this repo
 Small, composable modules coordinated by a global free-energy objective, with sparse non-local couplings that provide "future-like" corrections. Each module exposes an order parameter (η) and a local energy F(η; c). Composition = Σ F_local + Σ F_couple. The system seeks low-energy, coherent behavior without hard-coding global rules.
@@ -307,8 +307,8 @@ See also: `core/coordinator.py` (enable_orthogonal_noise, noise_magnitude), `tes
 - `EnergyCoordinator` now defaults to `use_analytic=True`. All shipped modules/couplings implement analytic gradients, and quadratic / hinge / gate-benefit families have vectorized paths (`use_vectorized_*`) to avoid Python loops on large graphs.
 - Adaptive coordinate descent is built in: set `adaptive_coordinate_descent=True` to warm-start with coordinate updates when ΔF stalls, then fall back to gradient steps.
 - Operator-splitting/prox mode: set `operator_splitting=True` to enable block‑prox updates (locals + incident couplings). Tunables: `prox_tau`, `prox_steps`, and optional `prox_block_mode="star"` to update each module together with its adjacent couplings (Jacobi-style block pass). Quadratic/hinge use closed‑form pairwise prox; gate‑benefit uses projected update.
-- ADMM mode (production-ready ✅): set `use_admm=True` with `admm_rho`, `admm_steps`, `admm_step_size`. Introduces auxiliary differences per quadratic edge and alternates s/η/u updates with a monotone acceptance guard.
-  - **All coupling families supported**: Quadratic, DirectedHinge, AsymmetricHinge, GateBenefitCoupling, DampedGateBenefitCoupling ✅
+- ADMM mode (production-ready): set `use_admm=True` with `admm_rho`, `admm_steps`, `admm_step_size`. Introduces auxiliary differences per quadratic edge and alternates s/η/u updates with a monotone acceptance guard.
+  - **All coupling families supported**: Quadratic, DirectedHinge, AsymmetricHinge, GateBenefitCoupling, DampedGateBenefitCoupling 
   - Hinge family: nonnegative auxiliary gaps on `β η_j − α η_i`.
   - Gate-benefit family: prox‑linear gate update with damping (set `admm_gate_prox=True`, `admm_gate_damping≈0.5`).
   - Tests: `test_admm_*.py` validate energy parity vs gradient descent across all coupling types.
@@ -330,8 +330,8 @@ See also: `core/coordinator.py` (enable_orthogonal_noise, noise_magnitude), `tes
 - Torch/JAX backends support the same Landau-style modules (gating, sequence, connectivity, Nash) plus quadratic/hinge/gate-benefit couplings, so you can offload relaxation with `uv run pytest tests/test_torch_backend.py` / `tests/test_jax_backend.py` when those extras are installed.
 - For a complete performance playbook (ΔF90 benchmarks, profiler snippets, remaining ideas) see `docs/speed_up_tweaks.md`.
 
-SmallGain allocator — Production Status ✅
-- **Status**: PRODUCTION READY (validated on baseline + dense scenarios)
+SmallGain allocator
+- (validated on baseline + dense scenarios)
 - **Performance**: 
   - Matches GradNorm on baseline (ΔF90=10) with **4x better final energy**
   - 40% faster than GradNorm on dense graphs (ΔF90=12 vs 20) with **4.4x better final energy**
@@ -389,7 +389,7 @@ Quick plots for per-step metrics from CSV logs:
 - **Multi-module scaling**: Chain sequence + connectivity + gating modules to demonstrate coherent global behavior emerges without bespoke heuristics when couplings are active. Log energy/η traces for both disabled/enabled couplings.
 
 
-## What’s here (MVP)
+## What’s here
 - Core
   - `core/interfaces.py`: typed protocols for modules and couplings
   - `core/energy.py`: Landau-style utilities; total energy helpers
@@ -506,8 +506,8 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 
 ### Module & Experiment Guides
 
-- **[docs/README_WORMHOLE.md](docs/README_WORMHOLE.md)** — Wormhole Effect explained + demo ✅ 🌀
-- **[docs/README_SMALLGAIN.md](docs/README_SMALLGAIN.md)** — SmallGain allocator user guide ✅ ⚖️
+- **[docs/README_WORMHOLE.md](docs/README_WORMHOLE.md)** — Wormhole Effect explained + demo 
+- **[docs/README_SMALLGAIN.md](docs/README_SMALLGAIN.md)** — SmallGain allocator user guide 
 - [docs/README_MODULES.md](docs/README_MODULES.md) — module quick reference (interfaces, invariants)
 - [docs/README_GATING.md](docs/README_GATING.md) — gating modules and energy-gated expansion
 - [docs/README_EXPERIMENTS.md](docs/README_EXPERIMENTS.md) — experiment intent, what to log, expected signals
@@ -517,14 +517,20 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 
 ### Code Reference
 
-- [PYDANTIC_V2_VALIDATION_GUIDE.md](PYDANTIC_V2_VALIDATION_GUIDE.md) — entity construction/validation patterns
+- [PYDANTIC_V2_VALIDATION_GUIDE.md] MISSING NEED TO PORT(PYDANTIC_V2_VALIDATION_GUIDE.md) — entity construction/validation patterns
 - [cf_logging/observability.py](cf_logging/observability.py) — `RelaxationTracker`, `GatingMetricsLogger`, `EnergyBudgetTracker`
 - Optional backends: `core/torch_backend.py`, `core/jax_backend.py`
 
 
 ## Notes:
-Novelty vs. reinvention: Energy-based models, graphical models, and modular RL are well-studied. The sketptic view: "This is just EBMs + sparse factor graphs + active inference, rebranded." 
-What's new?... we would argue: it's the specific combination hazard-based gating + typed micro-modules + non-local couplings + explicit redemption metrics
+Novelty vs. reinvention. Energy-based models, factor graphs, and modular RL are well‑studied. The skeptic’s take is fair: “Isn’t this just EBMs + sparse graphs + active inference?”  
+What’s new here is the specific, production‑oriented combination:
+- IEON and metric‑aware exploration: first‑order iso‑energy orthogonal noise (Euclidean and M‑orthogonal variants), fixed/adaptive controllers, and GSPO‑KL alignment.
+- Stability as a first‑class feature: Gershgorin step caps, contraction‑margin telemetry, and the SmallGain allocator (validated defaults, guarantees).
+- Production‑ready operator splitting: prox/ADMM across quadratic/hinge/gate‑benefit with acceptance guards and parity tests.
+- Conditioning by design: Legendre/aPC reparameterizations (CODE‑style) to stabilize local energies; conditioning benchmarks included.
+- Vectorized kernels and observability: block‑sparse/granular vectorization, per‑term energy/grad budgets, relaxation traces, gating metrics, and ready‑to‑run analysis scripts.
+- Typed micro‑modules and adapters: clean interfaces for modules/couplings/allocators; JAX/Torch backend hooks and an IEON repeats harness for experimentation.
 
 ## Why this repo fills an interesting gap
 
