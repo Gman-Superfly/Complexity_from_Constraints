@@ -284,8 +284,15 @@ Guards automatically skip the assertion when noise, line search, or homotopy/wei
 
 See `docs/ENERGY_CONSERVATION_AND_MONOTONICITY.md` for detailed guidance, mathematical background, and troubleshooting.
 
-#### Normalized Dynamics: why orthogonal (tangent-plane) noise
-Short answer: In Normalized Dynamics, the update uses the unit gradient direction. The gradient defines the normal to the energy level set, so the orthogonal complement is the tangent space. Injecting noise in that tangent space is structure‑preserving: it explores along the level set and doesn’t raise energy to first order. That’s the geometric reason a normalized, direction‑only flow naturally pairs with orthogonal (tangent‑plane) noise. Origin/prototype: Normalized Dynamics (Normalized_Dynamic_OPT) by Gman‑Superfly — see repository: `https://github.com/Gman-Superfly/Normalized_Dynamic_OPT`.
+#### Iso‑Energy Orthogonal Noise (IEON): why orthogonal (tangent-plane) noise
+Short answer: In IEON, the descent uses the unit gradient direction. The gradient defines the normal to the energy level set, so the orthogonal complement is the tangent space. Injecting noise in that tangent space is structure‑preserving: it explores along the level set and doesn’t raise energy to first order. That’s the geometric reason a normalized, direction‑only flow naturally pairs with orthogonal (tangent‑plane) noise. 
+Prototype noise injection inspiration reference: Normalized_Dynamic_OPT by Gman‑Superfly — see repository: `https://github.com/Gman-Superfly/Normalized_Dynamic_OPT`.
+Note: The prototype noise injection adds isotropic Gaussian noise in embedding space; IEON projects noise onto the tangent plane (orthogonal to ∇F) in η‑space, making it first‑order energy‑neutral.
+
+See also:
+- `docs/ISO-ENERGY_ORTHOGONAL_NOISE.md` (IEON overview and pseudocode)
+- `docs/METRIC_AWARE_NOISE_CONTROLLER.md` (metric‑aware variant, availability, caveats)
+- `docs/README_WHEN_TO_USE_NOISE.md` (practical guidance, commands, GSPO‑KL usage)
 
 #### When to turn it up (signals)
 - Gradient rotation: large angle between successive gradients (curved valleys).
@@ -293,7 +300,7 @@ Short answer: In Normalized Dynamics, the update uses the unit gradient directio
 - Backtracks / low contraction margin: line search repeatedly trims steps, or stability margin is tight.
 - Flat‑but‑anisotropic: very small ‖g‖ but high anisotropy proxy (e.g., gradient variance).
 
-See also: `core/coordinator.py` (enable_orthogonal_noise, noise_magnitude), `tests/test_orthogonal_noise.py`, and `docs/meta_learning_for_energy_landscapes.md` (Normalized Dynamics geometric trigger).
+See also: `core/coordinator.py` (enable_orthogonal_noise, noise_magnitude), `tests/test_orthogonal_noise.py`, and `docs/meta_learning_for_energy_landscapes.md` (IEON geometric trigger).
 
 ### Gradient + backend fast paths
 
@@ -452,6 +459,8 @@ uv run python -m experiments.sequence_redemption
 uv run python -m experiments.sequence_gating_hypothesis [--track_relaxation --log_gating_metrics]
 uv run python -m experiments.energy_gated_expansion [--log_gating_metrics]
 uv run python -m experiments.auto_balance_demo [--scenarios baseline gradnorm]
+# IEON repeats (orthogonal-noise exploration; requires enabling noise magnitude)
+uv run python -m experiments.ieon_repeats --configs vect gradnorm agm --repeats 3 --steps 60 --scenario dense --dense_size 32 --noise_magnitude 0.05 --auto_noise_controller --log_budget
 # optional if torch available
 uv run python -m experiments.energy_reg_attn_ablation
 uv run python -m experiments.emergent_nash_learning
@@ -489,6 +498,9 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 - [docs/PROXIMAL_METHODS.md](docs/PROXIMAL_METHODS.md) — ADMM, prox operators, when to use ✅
 - [docs/STABILITY_GUARANTEES.md](docs/STABILITY_GUARANTEES.md) — Lyapunov stability, SmallGain theorem, tuning ✅
 - [docs/META_LEARNING.md](docs/META_LEARNING.md) — Adapter hierarchy (GradNorm, AGM, SmallGain, GSPO-token) ✅
+- [docs/ISO-ENERGY_ORTHOGONAL_NOISE.md](docs/ISO-ENERGY_ORTHOGONAL_NOISE.md) — IEON overview and pseudocode ✅
+- [docs/METRIC_AWARE_NOISE_CONTROLLER.md](docs/METRIC_AWARE_NOISE_CONTROLLER.md) — Metric‑aware tangent‑plane projection ✅
+- [docs/README_WHEN_TO_USE_NOISE.md](docs/README_WHEN_TO_USE_NOISE.md) — When to use noise, settings, GSPO‑KL usage ✅
 - [docs/POLYNOMIAL_BASES.md](docs/POLYNOMIAL_BASES.md) — Legendre vs aPC, conditioning benefits
 - [docs/SMALLGAIN_VALIDATION_FINAL.md](docs/SMALLGAIN_VALIDATION_FINAL.md) — SmallGain production validation ✅
 

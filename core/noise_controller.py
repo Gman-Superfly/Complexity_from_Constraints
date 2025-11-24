@@ -98,3 +98,12 @@ class OrthogonalNoiseController:
         self._last_grad = None
         self._current_scale = 0.0
 
+
+@dataclass
+class MetricAwareNoiseController(OrthogonalNoiseController):
+    """Metric-aware variant (same signals; pairs with M-orthogonal projection).
+    
+    This controller reuses the same signal mapping as OrthogonalNoiseController.
+    It is intended to be used when a problem-specific metric M is available
+    and noise is projected with that metric (see project_noise_metric_orthogonal).
+    """

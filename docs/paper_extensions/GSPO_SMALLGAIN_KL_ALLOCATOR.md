@@ -182,10 +182,11 @@ Code and documentation: see `README.md` and `Complexity_from_Constraints.md`.
 
 
 
-=================
----
-=================
-## EXTENSIONS (To-Do)
+================
+ ---- XTRA ----
+================
+
+## EXTENSIONS (To-Do for this repo, maybe)
 
 ## 10) Orthogonal/Tangent‑Plane Noise for GSPO‑token (Online Exploration)
 
@@ -271,6 +272,25 @@ Extend Section 7 (Ablation plan) with:
 Expected outcomes: smoother online learning curves (reduced variance) without increasing KL overshoot rate; improved sample‑efficiency when reward plateaus but gradients rotate.
 
 ### 10.8 Reference (origin)
-Orthogonal (tangent‑plane) noise prototype: Normalized Dynamics (Normalized_Dynamic_OPT) by Gman‑Superfly — https://github.com/Gman-Superfly/Normalized_Dynamic_OPT
+Orthogonal (tangent‑plane) noise lore: docs/ISO-ENERGY_ORTHOGONAL_NOISE.md
 
+
+### 10.9 Noise integration quick guide (IEON / metric‑aware)
+- Repo Switches:
+  - enable_orthogonal_noise=True
+  - Fixed noise: auto_noise_controller=False, noise_magnitude>0, optional noise_schedule_decay
+  - Adaptive noise: auto_noise_controller=True (signals: stall, backtracks/clip events, gradient rotation)
+  - Metric‑aware: metric_aware_noise_controller=True with metric_vector_product or metric_matrix
+- Projection target:
+  - Reward‑orthogonal: first‑order neutral for reward objective (⟨z⊥, g⟩=0)
+  - KL‑orthogonal: first‑order neutral for KL constraint (⟨z⊥, g_KL⟩=0); pairs naturally with Fisher/metric‑aware setups
+- When to use:
+  - High gradient rotation, stalled reward improvement, variance spikes
+  - You want exploration that doesn’t blow up the KL gate to first order
+- Budget interplay:
+  - Reserve a small κ‑fraction of the KL budget for curvature; skip noise when near the limit
+- See also:
+  - docs/ISO-ENERGY_ORTHOGONAL_NOISE.md (IEON)
+  - docs/METRIC_AWARE_NOISE_CONTROLLER.md (metric‑aware variant)
+  - docs/README_WHEN_TO_USE_NOISE.md (practical guidance and commands)
 

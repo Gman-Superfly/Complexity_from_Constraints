@@ -47,6 +47,16 @@ This document explains the meta-learning adapter hierarchy in Complexity from Co
 
 **Recommendation**: Start with **GradNorm** (simple, fast). Upgrade to **SmallGain** for production (formal guarantees).
 
+**Note**
+
+- See `docs/paper_extensions/GSPO_SMALLGAIN_KL_ALLOCATOR.md` — proposed SmallGain–KL allocator for GSPO‑token. It treats the sequence‑level KL/clip target as a global trust‑region budget and allocates it across token groups with the best value‑per‑cost ratio (value ≈ advantage², cost ≈ KL‑sensitivity/Fisher proxy), under per‑step caps and [λ_min, λ_max] bounds. Integration options:
+  - Safety filter: GSPO proposes per‑token updates; allocator shapes per‑group clip/LR to stay within a ρ·budget and smooth updates.
+  - Structured signals: add `budget/spent/score` telemetry as state or reward penalties in GSPO to bias safer learning.
+  - Hierarchical split: GSPO chooses coarse budgets; allocator performs within‑group greedy allocation under row/global constraints.
+  - Practical defaults to start: ρ = 0.7, `max_step_change` = 0.10, λ ∈ [0.8, 1.25].
+
+Status: Draft (spec idea). We may implement this to improve stability/efficiency of GSPO‑token while preserving the global trust‑region guarantees, this might be as extra step, so it's really a big decision, we may eventually refresh this whole stack, but we will call it V2 as to not mess up yours and our work.
+
 ---
 
 ## Adapter 1: GradNorm (Reactive Balancing)

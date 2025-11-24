@@ -30,4 +30,6 @@ This module implements rare-but-impactful expansion decisions as part of a small
 
 Ref: Häggström & Pemantle (1997), “First passage percolation and a model for competing spatial growth.” [arXiv PDF](https://arxiv.org/pdf/math/9701226)
 
-
+## Related AGM references
+- How AGM is used here (phase‑adaptive weighting + uncertainty‑gated thresholds): see `docs/README_AGM.md`
+- Origin of the adaptive idea (off‑policy, offline log ingestion scaffold): [AGM_Training](https://github.com/Gman-Superfly/AGM_Training)

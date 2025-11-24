@@ -14,6 +14,7 @@ __all__ = [
     "descend_free_energy",
     "total_energy",
     "project_noise_orthogonal",
+    "project_noise_metric_orthogonal",
 ]
 
 
@@ -119,6 +120,38 @@ def project_noise_orthogonal(
     noise_orth = noise - projection_scalar * grad
     
     return noise_orth
+
+
+def project_noise_metric_orthogonal(
+    noise: np.ndarray,
+    grad: np.ndarray,
+    *,
+    M: np.ndarray | None = None,
+    Mv: callable | None = None,
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """Project noise onto the subspace orthogonal to the gradient under metric M.
+    
+    When M is None and Mv is None, falls back to Euclidean projection.
+    
+    Uses:
+        z_perp = z - ((z^T M g) / (g^T M g)) g
+    where M g is computed via Mv(g) if provided, else M @ g.
+    """
+    g = np.asarray(grad, dtype=float)
+    z = np.asarray(noise, dtype=float)
+    if M is None and Mv is None:
+        return project_noise_orthogonal(z, g, eps=eps)
+    if Mv is not None:
+        Mg = np.asarray(Mv(g), dtype=float)
+    else:
+        Mg = np.asarray(M @ g, dtype=float)  # type: ignore[operator]
+    gT_M_g = float(np.sum(g * Mg))
+    if abs(gT_M_g) < eps:
+        return z
+    zT_M_g = float(np.sum(z * Mg))
+    alpha = zT_M_g / gT_M_g
+    return z - alpha * g
 
 
 

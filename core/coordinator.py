@@ -30,7 +30,7 @@ from .couplings import (
     GateBenefitCoupling,
     DampedGateBenefitCoupling,
 )
-from .energy import project_noise_orthogonal, total_energy
+from .energy import project_noise_orthogonal, project_noise_metric_orthogonal, total_energy
 from .prox_utils import prox_asym_hinge_pair, prox_linear_gate, prox_quadratic_pair
 from .agm_metrics import compute_agm_phase_metrics, compute_uncertainty_metrics
 from .noise_controller import OrthogonalNoiseController
@@ -154,6 +154,10 @@ class EnergyCoordinator:
     noise_magnitude: float = 0.0
     noise_schedule_decay: float = 0.99  # Simple exponential decay for noise magnitude
     auto_noise_controller: bool = False  # Adapt noise magnitude using orthogonal-noise controller
+    # Metric-aware projection (optional)
+    metric_aware_noise_controller: bool = False
+    metric_matrix: Optional[np.ndarray] = None
+    metric_vector_product: Optional[Callable[[np.ndarray], np.ndarray]] = None
     # Uncertainty-gated thresholds for gate costs
     enable_uncertainty_gate: bool = False
     gate_cost_relax_scale: float = 0.85
@@ -352,11 +356,19 @@ class EnergyCoordinator:
             else:
                 current_noise_mag = self.noise_magnitude * (self.noise_schedule_decay ** iter_idx)
             if current_noise_mag > 1e-9:
-                    raw_noise = np.random.normal(0, 1, size=grad_vector.shape)
+                raw_noise = np.random.normal(0, 1, size=grad_vector.shape)
+                if self.metric_aware_noise_controller and (self.metric_vector_product is not None or self.metric_matrix is not None):
+                    noise_vector = project_noise_metric_orthogonal(
+                        raw_noise,
+                        grad_vector,
+                        M=self.metric_matrix,
+                        Mv=self.metric_vector_product,
+                    )
+                else:
                     noise_vector = project_noise_orthogonal(raw_noise, grad_vector)
-                    noise_norm = np.linalg.norm(noise_vector)
-                    if noise_norm > 1e-9:
-                        noise_vector = noise_vector * (current_noise_mag / noise_norm)
+                noise_norm = np.linalg.norm(noise_vector)
+                if noise_norm > 1e-9:
+                    noise_vector = noise_vector * (current_noise_mag / noise_norm)
             
             # step
             if self.line_search:

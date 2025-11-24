@@ -65,7 +65,7 @@ Added optional **monotonic energy assertion** feature to `EnergyCoordinator` for
 - Adaptive methods (ADMM, operator-splitting)
 - Homotopy schedules
 
-Origin/prototype for orthogonal (tangent‑plane) noise: Normalized Dynamics (Normalized_Dynamic_OPT) by Gman‑Superfly — `https://github.com/Gman-Superfly/Normalized_Dynamic_OPT`.
+Origin LORE for orthogonal (tangent‑plane) noise: docs/ISO-ENERGY_ORTHOGONAL_NOISE.md 
 
 ## How It Works
 
@@ -105,15 +105,15 @@ tests/test_monotonic_energy.py::test_monotonic_energy_disabled_by_default PASSED
 All 73 existing tests still pass ✅
 ```
 
-## Relation to "Slop" Concept
+## Relation to "Slack" Concept
 
-In our earlier discussion, we explored "slop" as compressibility vs value. In energy terms:
+In our earlier discussion, we explored "slack" as compressibility vs value. In energy terms:
 
-- **Slop in text** = redundancy unjustified by utility U
-- **Slop in energy** = excess energy (ΔF) over the minimum needed for the same utility
+- **Slack in text** = redundancy unjustified by utility U
+- **Slack in energy** = excess energy (ΔF) over the minimum needed for the same utility
 - **Energy conservation** = ensuring we don't add slop (unnecessary energy) during optimization
 
-The monotonic energy assertion ensures that gradient descent **removes slop** (reduces F) rather than adding it. It's the operational check that we're moving toward compression/minimization, not away from it.
+The monotonic energy assertion ensures that gradient descent **removes slack** (reduces F) rather than adding it. It's the operational check that we're moving toward compression/minimization, not away from it.
 
 ## Documentation Structure
 
