@@ -1,5 +1,7 @@
 # Precision Layer Dashboard (Phase 2 P3)
 
+Mini dashboard, but I really don't like it, for sure this won't be a full feature, I would prefer not to do this, for now streamlit can live...
+
 Dashboard script: `tools/p3_dashboard.py`
 
 Use Streamlit + Polars to visualize precision, stability, and energy telemetry recorded by the existing loggers.

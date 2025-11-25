@@ -1,6 +1,6 @@
 # SmallGain Allocator — Production Validation ✅
 
-**Status**: PRODUCTION READY  
+**Status**: PRODUCTION READY  ... but big refactor incoming
 **Date**: November 2025  
 **Test Coverage**: 120 tests passing, including unit tests for SmallGain allocator
 
