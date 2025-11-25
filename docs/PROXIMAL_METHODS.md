@@ -111,6 +111,20 @@ for each module i in parallel:
 **Benefit**: More parallelizable, smoother energy descent  
 **Cost**: Slightly more compute per iteration
 
+##### Visual: Star Block Around Node i
+
+```
+      j
+      │
+  k ──●── m     (update i together with all incident couplings)
+      │
+      ℓ
+
+Block prox at i:
+  η_i ← prox( F_local(i) + Σ_{(i,•)} F_coupling(i, •) )
+(Run these star updates for all i in parallel, Jacobi-style)
+```
+
 ---
 
 ## ADMM Mode (Advanced)
@@ -135,6 +149,30 @@ s^{k+1} &= \arg\min_s \left\{ w s^2 + \frac{\rho}{2}(s - (η_i - η_j) - u)^2 \r
 u^{k+1} &= u + (s - (η_i - η_j))
 \end{align}
 \]
+
+#### Visual: ADMM Update Cycle and Consensus
+
+```
+      +------------+        primal variables (η)
+      |  η-update  |  ← minimize local energy + penalties
+      +------------+
+             │
+             v
+      +------------+        auxiliary differences (s)
+      |  s-update  |  ← minimize per-edge quadratic with ρ
+      +------------+
+             │
+             v
+      +------------+        duals (u) enforce agreement
+      |  u-update  |  ← u ← u + (s − (η_i − η_j))
+      +------------+
+             │
+             └──────────── repeat until residuals small
+
+Consensus on edge (i, j):
+  s_ij  ≈  η_i − η_j     (auxiliary matches actual difference)
+  u_ij enforces the constraint via augmented Lagrangian
+```
 
 ### When to Use ADMM vs Proximal
 

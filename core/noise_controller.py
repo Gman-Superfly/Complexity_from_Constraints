@@ -107,3 +107,38 @@ class MetricAwareNoiseController(OrthogonalNoiseController):
     It is intended to be used when a problem-specific metric M is available
     and noise is projected with that metric (see project_noise_metric_orthogonal).
     """
+
+
+@dataclass
+class PrecisionNoiseController(OrthogonalNoiseController):
+    """Precision-aware controller that redistributes noise toward low-curvature directions.
+
+    Extends OrthogonalNoiseController with a curvature-to-weight mapper:
+      w_i ∝ 1 / (eps + curvature_i)
+    The weights can be used to reweight an already orthogonalized noise vector
+    before re-projecting to ensure orthogonality is preserved.
+    """
+
+    precision_epsilon: float = 1e-8
+
+    def weights_for_curvatures(self, curvatures: np.ndarray, *, eps: Optional[float] = None) -> np.ndarray:
+        """Return per-dimension weights inversely proportional to curvature.
+
+        Args:
+            curvatures: 1D array of non-negative curvature (stiffness) values.
+            eps: Optional override for small positive epsilon to avoid division by zero.
+
+        Returns:
+            1D array of non-negative weights normalized to unit ℓ2 norm (if possible).
+        """
+        curv = np.asarray(curvatures, dtype=float)
+        local_eps = float(self.precision_epsilon if eps is None else eps)
+        inv = 1.0 / (local_eps + np.maximum(curv, 0.0))
+        # If all zeros, fall back to uniform weights
+        if not np.any(inv > 0.0):
+            inv = np.ones_like(inv)
+        # Normalize to unit ℓ2 to separate direction (weights) from magnitude
+        norm = float(np.linalg.norm(inv))
+        if norm > 0.0:
+            inv = inv / norm
+        return inv

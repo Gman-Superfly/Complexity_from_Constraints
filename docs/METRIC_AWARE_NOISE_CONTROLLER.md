@@ -31,6 +31,36 @@ This note describes an optional extension of Iso‑Energy Orthogonal Noise (IEON
   - If enabled and metric is available: use \(M\)-orthogonal projection and (optionally) M‑aware magnitude scaling.
   - Else: revert to Euclidean IEON with the same auto controller signals.
 
+### Precision-aware redistribution (optional)
+
+Combine metric-aware projection with inverse‑precision weighting to emphasize low‑curvature directions:
+
+```python
+from core.coordinator import EnergyCoordinator
+
+coord = EnergyCoordinator(
+    modules=...,
+    couplings=...,
+    constraints={},
+    enable_orthogonal_noise=True,
+    noise_magnitude=0.1,
+    auto_noise_controller=True,
+    metric_aware_noise_controller=True,
+    metric_vector_product=lambda v: M @ v,   # or metric_matrix=M
+    precision_aware_noise_controller=True,   # inverse-precision weighting
+    # optional: diagonal preconditioning for the step
+    use_precision_preconditioning=True,
+    precision_epsilon=1e-8,
+)
+```
+
+Order of operations:
+1) Generate raw noise
+2) Project to (metric‑)orthogonal
+3) Weight by inverse curvature
+4) Re‑project to preserve orthogonality
+5) Normalize to target magnitude
+
 ## Pseudocode
 ```python
 # Inputs per step: grad g, raw noise z, metric M (optional), base_magnitude, decay, signals

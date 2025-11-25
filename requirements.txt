@@ -12,6 +12,7 @@ networkx>=3.0
 
 # Optional (only for visualizations)
 # matplotlib>=3.8
+# streamlit>=1.36  # dashboard (tools/p3_dashboard.py)
 
 # Dev / testing
 # pytest>=7.0

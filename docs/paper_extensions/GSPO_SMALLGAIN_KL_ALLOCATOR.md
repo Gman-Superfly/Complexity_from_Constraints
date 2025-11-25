@@ -34,6 +34,30 @@ Intuition: Spend more “trust-region budget” where token-level advantages are
 
 ---
 
+## Visual: Sequence KL Budget Allocation to Token Groups
+
+```
+Global sequence TR budget B_t (KL/clip):
+[|||||||||||||||||||||||      ]   remaining
+ ^ spent (Σ ΔKL_k)             ^ remaining
+
+Token groups sorted by score s_k = v_k / (c_k + ε):
+  g3: ██████████████   (best payoff)
+  g1: ███████
+  g2: ████
+  g4: ██
+
+Greedy allocation:
+  g3 ← widen clip / raise LR   ──┐
+  g1 ← widen/raise             ──┤→ stop when spent ≥ ρ · B_t
+  g2 ← (skip/partial)          ──┘
+
+Apply:
+  - Option A: per-group clip shaping (Δclip_k)
+  - Option B: per-group LR scaling for logits (λ_k)
+  - Option C: small mixture of both
+```
+
 ## 3) Mathematics (Local linearization)
 
 Let the per-group update scale be \(\delta w_k\) (interpretable as a per-token-group learning-rate multiplier, or a per-group clip expansion). Under a local linearization:

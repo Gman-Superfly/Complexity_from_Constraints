@@ -362,7 +362,7 @@ The Wormhole Effect is the core mechanism behind the "Redemption" architecture p
 |------------|-------------|----------------------|---------|
 | **This framework** | Generic order parameter | `GateBenefitCoupling` | Inactive modules activated when beneficial |
 | `Inverse_ND_Reconstruction` | Loop trajectory parameters | Refinement stage corrects hallucinated loops | Explainable closed-loop reconstruction |
-| `Normalized_Dynamic_OPT` | Cluster centers | Later points reassign provisional assignments | 83% compression, full biology kept |
+| `Normalized_Dynamic_OPT` | Cluster centers | Later points reassign provisional assignments | efficient compression, geometric relations kept |
 | `Hallucinations_Noisy_Channels` | Latent sequence state | Later tokens correct earlier (when allowed) | Theory of hallucinations |
 | `Spaced_Repetition_Learning` | Replay priority | Hard/diverse samples force correction | Inference-time self-improvement |
 

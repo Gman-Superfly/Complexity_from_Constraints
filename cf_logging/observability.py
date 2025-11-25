@@ -8,6 +8,7 @@ from core.agm_metrics import compute_agm_phase_metrics, compute_uncertainty_metr
 
 from core.coordinator import EnergyCoordinator
 from cf_logging.metrics_log import log_records
+from core.info_metrics import InformationMetrics
 
 
 @dataclass
@@ -98,6 +99,11 @@ class EnergyBudgetTracker:
     # Margin warning
     warn_on_margin_shrink: bool = False
     margin_warn_threshold: float = 1e-6
+    # Precision/stiffness per-η logging
+    log_per_eta_precision: bool = False
+    # Free energy decomposition F = U - T*S
+    log_free_energy_decomposition: bool = False
+    temperature: float = 1.0  # Temperature for F = U - T*S
 
     def attach(self, coord: EnergyCoordinator) -> None:
         self.coord = coord
@@ -155,6 +161,87 @@ class EnergyBudgetTracker:
         norms = coord._term_grad_norms(etas)  # instrumentation
         for k, v in norms.items():
             row[f"grad_norm:{k}"] = float(v)
+        
+        # Free energy decomposition: F = U - T*S
+        if self.log_free_energy_decomposition:
+            # U (Internal energy) is the total energy
+            U = float(energy)
+            # S (Entropy): Shannon-like entropy for order parameters in [0,1]
+            # S = -Σ[η*log(η) + (1-η)*log(1-η)] with safe guards for 0 and 1
+            S = 0.0
+            for eta_val in etas:
+                eta_f = float(max(1e-9, min(1.0 - 1e-9, eta_val)))  # Clamp away from boundaries
+                s_i = -(eta_f * float(__import__('math').log(eta_f)) + (1.0 - eta_f) * float(__import__('math').log(1.0 - eta_f)))
+                S += s_i
+            # F = U - T*S
+            F = U - float(self.temperature) * S
+            row["U_internal_energy"] = float(U)
+            row["S_entropy"] = float(S)
+            row["F_free_energy"] = float(F)
+            row["T_temperature"] = float(self.temperature)
+        
+        # Precision (stiffness) summary stats, if available
+        try:
+            if hasattr(coord, "get_precision_diagonal"):
+                diag = list(getattr(coord, "get_precision_diagonal")())
+                if isinstance(diag, list) and len(diag) > 0:
+                    vals = [float(max(0.0, v)) for v in diag]
+                    row["precision:min"] = float(min(vals))
+                    row["precision:max"] = float(max(vals))
+                    row["precision:mean"] = float(sum(vals) / float(len(vals)))
+                    # Per-η precision logging if requested
+                    if self.log_per_eta_precision:
+                        for idx, prec_val in enumerate(vals):
+                            row[f"precision:{idx}"] = float(prec_val)
+        except Exception:
+            # best-effort; ignore precision logging errors
+            pass
+        # Sensitivity probes: dispersion measure (if available)
+        try:
+            if hasattr(coord, "last_probe_dispersion"):
+                val = getattr(coord, "last_probe_dispersion")()
+                if val is not None:
+                    row["sensitivity:dispersion"] = float(val)
+        except Exception:
+            pass
+        # Information structure metrics (if reference provided)
+        try:
+            # Alignment and drift relative to reference etas
+            ref_etas = None
+            if isinstance(coord.constraints, dict):
+                ref_etas = coord.constraints.get("reference_etas", None)
+            if isinstance(ref_etas, list) and len(ref_etas) == len(etas):
+                align = InformationMetrics.compute_alignment(etas, ref_etas)
+                drift = InformationMetrics.compute_drift(etas, ref_etas)
+                row["info:alignment"] = float(align)
+                row["info:drift"] = float(drift)
+        except Exception:
+            # Optional metrics; ignore errors
+            pass
+        try:
+            # Constraint violation rate if counts are supplied in constraints
+            if isinstance(coord.constraints, dict):
+                v = coord.constraints.get("constraint_violation_count", None)
+                t = coord.constraints.get("total_constraints_checked", None)
+                if isinstance(v, (int, float)) and isinstance(t, (int, float)):
+                    rate = InformationMetrics.compute_constraint_violation_rate(int(v), int(t))
+                    row["info:constraint_violation_rate"] = float(rate)
+        except Exception:
+            pass
+        # Escape events (if available)
+        try:
+            if hasattr(coord, "get_escape_event_count"):
+                row["escape_event_count"] = int(getattr(coord, "get_escape_event_count")())
+        except Exception:
+            pass
+        # Confidence (if available)
+        try:
+            if hasattr(coord, "last_confidence"):
+                cval = getattr(coord, "last_confidence")()
+                if cval is not None:
+                    row["confidence:c"] = float(cval)
+        except Exception:
+            pass
         # AGM phase metrics and uncertainty (computed on recent energy history)
         try:
             recent = self._energy_history[-32:] if self._energy_history else []
@@ -181,6 +268,15 @@ class EnergyBudgetTracker:
                 row["margin_warn"] = 1
             else:
                 row["margin_warn"] = 0
+        # Backtrack counts
+        if last_bk is not None:
+            row["last_backtracks"] = int(last_bk)
+        if total_bk is not None:
+            row["total_backtracks"] = int(total_bk)
+        # Acceptance reason (if tracked by coordinator)
+        accept_reason = getattr(coord, "_last_acceptance_reason", None)
+        if accept_reason is not None:
+            row["acceptance_reason"] = str(accept_reason)
         # Lipschitz allocator details (if available)
         details = getattr(coord, "_last_lipschitz_details", None)
         if isinstance(details, dict):

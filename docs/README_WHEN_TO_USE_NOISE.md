@@ -7,6 +7,20 @@ This guide explains when and how to use orthogonal (tangent‑plane) noise in ou
 - Metric‑aware variant is iso‑energy in metric M: g^T M z⊥,M = 0. That is only approximately iso‑energy for F unless M ≈ local geometry of F (e.g., Fisher for KL).
 - Any noise (adaptive or fixed) breaks strict determinism → monotonic energy assertion is auto‑skipped.
 
+### Visual: Orthogonal Noise Geometry (IEON)
+
+```
+             z⊥   (tangent-plane exploration)
+            ↗
+F = const ─────────────────────────────  (level set)
+              ⟂
+              g = ∇F  (normal)
+
+Update:
+  η ← η − α · ĝ + σ · z⊥
+  with ĝ = g / ||g||  and  ⟨z⊥, g⟩ = 0  (first‑order iso‑energy)
+```
+
 ## IEON (Euclidean) — Fixed vs Adaptive
 - Fixed (non‑adaptive)
   - enable_orthogonal_noise=True

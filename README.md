@@ -503,6 +503,7 @@ uv run python examples.landau_plot --a -0.5 --b 1.0 --save plots/landau.png
 - [docs/README_WHEN_TO_USE_NOISE.md](docs/README_WHEN_TO_USE_NOISE.md) — When to use noise, settings, GSPO‑KL usage ✅
 - [docs/POLYNOMIAL_BASES.md](docs/POLYNOMIAL_BASES.md) — Legendre vs aPC, conditioning benefits
 - [docs/SMALLGAIN_VALIDATION_FINAL.md](docs/SMALLGAIN_VALIDATION_FINAL.md) — SmallGain production validation ✅
+- [docs/INFORMATION_METRICS.md](docs/INFORMATION_METRICS.md) — Alignment, drift, and constraint violation rate (h) logging
 
 ### Module & Experiment Guides
 
@@ -593,6 +594,14 @@ We note independent, recent work that aligns with parts of this framework. We co
 ### Discrete–continuous optimization bridge
 - We use hazard-based gating (η_gate = 1 − exp(−softplus(k·net))) as a smooth relaxation of discrete open/close decisions. During measurement we apply soft blending; for attribution or deployment we can apply a hard threshold (straight‑through–like), yielding a practical route to solve discrete selection with continuous optimization inside the coordinator (no REINFORCE).
 - This pattern mirrors “smoothing/STE” in dynamic chunking architectures (cf. H‑Net) and fits an operator‑splitting/proximal view: the gate is a differentiable control variable, while the final decision can be snapped to a discrete action without changing the inner energy formulation. See also “Related evidence (recent work)”. 
+
+#### Visual: Discrete–Continuous Bridge (Straight‑Through)
+
+```
+η_soft ∈ [0,1]  ──[threshold τ]──>  η_hard ∈ {0,1}
+     │                                   │
+     └─ used in energy/grad              └─ used for decisions/attribution (optional)
+```
 
 Straight‑Through option (optional):
 - Construct `EnergyGatingModule(..., straight_through=True, st_threshold=0.5)` to return a hard forward decision (0/1) while keeping the smooth formulation available internally for analysis and attribution. Default remains soft (straight_through=False).

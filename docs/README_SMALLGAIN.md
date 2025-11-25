@@ -63,6 +63,31 @@ Traditional approaches either:
 5. Return updated weights (bounded by [floor, ceiling])
 ```
 
+## Visual: Stability Budget Allocation (Fractional Knapsack)
+
+```
+Stability budget B = ρ · (2/α)
+
+Remaining budget:
+[||||||||||||||||||||      ]   ← B − spent
+ ^ spent (Σ δL)             ^ remaining
+
+Edges ranked by score = value/cost (descending):
+  e3: ████████████████   (best payoff)
+  e1: ████████
+  e2: ███
+  e4: ██
+
+Greedy allocation:
+  e3 ← Δw (small δL, large ΔF) ──┐
+  e1 ← Δw                        ├──> stop when spent ≥ B
+  e2 ← Δw (skip if over budget) ─┘
+
+Effect:
+  - Spend curvature budget where it buys the most energy drop
+  - Keep total “gain” under the stability margin (formal guarantee)
+```
+
 ---
 
 ## Theoretical Foundations

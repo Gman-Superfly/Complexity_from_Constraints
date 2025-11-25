@@ -32,6 +32,26 @@ Update (with optional line search and invariants):
 
 Key property: \(z_\perp^\top g = 0\), so to first order the injected noise does not increase energy. This “structure‑preserving” exploration complements line search, homotopy, and adaptive weight schedules.
 
+### ASCII Visuals: Level Set, Gradient, Tangent Noise, and Acceptance
+
+```
+Local geometry at η_t:
+
+                 z⊥  (explore along tangent)
+                ↗
+F = const  ───────────────────────────  (level set / tangent plane)
+                     ⟂
+                     g = ∇F(η_t)  (normal)
+
+Descent + exploration:
+  trial η' = η_t − α · ĝ + σ · z⊥
+              with ĝ = g / ||g||  and  ⟨z⊥, g⟩ = 0
+
+Acceptance (guards):
+  if ΔF(η') ≤ 0 (or Armijo sufficient decrease) → ACCEPT
+  else → shrink α (and/or σ) and retry
+```
+
 ## 3. Algorithm (Pseudo‑Code)
 ```python
 def orthogonal_noise_step(eta, grad, step_size, noise_std, project, line_search=None):
@@ -174,6 +194,31 @@ Tuning tips:
 - Start with small `noise_magnitude` (e.g., 0.02–0.1 relative to η scale); enable `auto_noise_controller=True`.
 - Keep `line_search=True` and stability guard on; IEON plays well with both.
 - Log contraction margins and ΔF; ensure IEON raises exploration without harming acceptance rates.
+
+### Precision‑aware redistribution (optional)
+
+When the Precision Layer is enabled, you can redistribute orthogonal noise toward low‑curvature directions before re‑projecting to preserve orthogonality.
+
+```python
+from core.coordinator import EnergyCoordinator
+
+coord = EnergyCoordinator(
+    modules=...,
+    couplings=...,
+    constraints={},
+    enable_orthogonal_noise=True,
+    noise_magnitude=0.1,
+    auto_noise_controller=True,            # adapt magnitude by descent signals
+    precision_aware_noise_controller=True, # inverse-precision weighting of orthogonal noise
+    # optional: also use diagonal preconditioning on the step
+    use_precision_preconditioning=True,
+    precision_epsilon=1e-8,
+)
+```
+
+Notes:
+- The coordinator re‑projects weighted noise to remain orthogonal (Euclidean or metric‑aware).
+- Keep magnitude scheduling (auto controller) and directional weighting (precision) conceptually separate.
 
 ## 8. Reproducibility (Windows PowerShell)
 Run ΔF/conditioning benchmarks with normalized grads:

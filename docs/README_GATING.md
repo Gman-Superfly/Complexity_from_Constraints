@@ -8,6 +8,29 @@ This module implements rare-but-impactful expansion decisions as part of a small
 - Local energy: `F_gate(η) = a η^2 + b η^4` discourages casual expansion.
 - Coupling: `F = - w · η_gate · Δη_domain` rewards opening the gate only when domain order improves.
 
+## Visual: Hazard → Probability → Gate (with Energies)
+
+```
+gain - cost = net
+        │
+        v
+λ = softplus(k · net)        (λ ≥ 0, hazard)
+        │
+        v
+η_gate = 1 − exp(−λ)         (0 ≤ η ≤ 1, one-step open probability)
+
+Resist casual opens (local):
+  F_gate(η) = a · η² + b · η⁴
+
+Open when useful (coupling):
+  F_couple = − w · η_gate · Δη_domain
+
+Behavior:
+  net < 0  → λ ≈ 0 → η ≈ 0     (closed)
+  net ≈ 0  → λ small → η small (rare opens)
+  net > 0  → λ > 0 → η ↑       (opens more when benefit is strong)
+```
+
 ## Usage
 1. Define a `gain_fn(x)` returning positive improvement (e.g., `η_after - η_before`).
 2. Create `EnergyGatingModule(gain_fn, cost=...)`.

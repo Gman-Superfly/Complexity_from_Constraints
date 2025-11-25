@@ -2,6 +2,18 @@
 
 Short, humble summaries (≤2 screens). Every module follows the `EnergyModule` protocol (`compute_eta`, `local_energy`, optional `d_local_energy_d_eta`) and keeps η within `[0, 1]`. Couplings follow `EnergyCoupling` with optional analytic derivatives (`SupportsCouplingGrads`). Term weights can be tuned dynamically via `EnergyCoordinator` (see README meta-training section).
 
+## Precision-aware modules 
+
+- **What**: Modules may now implement `SupportsPrecision` to expose local stiffness/curvature.
+- **Why**: The coordinator records a per-module precision diagonal every relaxation step. This enables Newton-aware step scaling and precision-controlled noise injection (see `docs/ROADMAP_NEUROSYMBOLIC_HOMEOSTAT.md`).
+- **Interface**:
+  ```python
+  class SupportsPrecision(Protocol):
+      def curvature(self, eta: float) -> float:
+          """Return the local second derivative at η."""
+  ```
+- **Guidance**: Return non-negative curvature (stiff constraints → large values). If unsure, omit the protocol and the coordinator treats the module as “loose” (precision 0). Tests: `tests/test_precision_core.py` ensures the cache reflects module-provided curvature.
+
 ## Weight Adapters (`core/weight_adapters.py`)
 - **What**: Implementations of the `WeightAdapter` protocol that dynamically adjust term weights during relaxation.
 - **GradNormWeightAdapter**: Equalizes gradient magnitudes across local/coupling terms to prevent "energy wars"; adjustable target norm, alpha (restoring force), update rate, floor/ceiling clamps.

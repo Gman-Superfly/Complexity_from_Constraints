@@ -14,7 +14,7 @@ A simple scalar objective plus the ability for the future to non-locally correct
 
 We focus on making hard problems more manageable with a simple recipe: each module exposes an order parameter and a local energy; sparse couplings allow “future-like” context to redeem past decisions; a coordinator relaxes the system by descending a total energy; gate decisions are made only when they reduce total energy and justify their cost.
 
-Deep Learning (Transformers) is "System 1" thinking: Fast, intuitive, can contain errors/hallucination.
+Deep Learning (Transformers) is "System 1" thinking: Fast, intuitive, can contain errors/hallucination (in the codebase we describe these strictly as errors/constraint violations; "hallucination" remains here for LLM vernacular).
 
 Complexity_from_Constraints methodology is "System 2" thinking: Slow, deliberate, logical, guaranteed to respect rules.
 

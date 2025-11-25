@@ -70,6 +70,7 @@ Each experiment is ≤2 screens, deterministic seeds, and logs via `cf_logging.m
 - **Observability**:
   - Pass `--log_budget` to attach `EnergyBudgetTracker` per run; CSVs (named via `--budget_name`) stream per-step energies/gradients for downstream adapter/meta-learning analysis.
   - Margin warning toggles (with `--log_budget`): `--warn_on_margin_shrink` to emit `margin_warn` column; `--margin_warn_threshold <float>` to set the threshold (default 1e-4).
+  - Constraint violation rate (h): to emit `info:constraint_violation_rate`, include `constraint_violation_count` and `total_constraints_checked` in `coord.constraints`; see `docs/INFORMATION_METRICS.md`.
 - **Usage**:
   - `uv run python -m experiments.benchmark_delta_f90 --configs analytic prox gradnorm agm --steps 60`
   - `uv run python -m experiments.benchmark_delta_f90 --configs vect smallgain prox_star --scenario dense --dense_size 32 --log_budget`

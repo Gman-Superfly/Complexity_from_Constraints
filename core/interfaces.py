@@ -13,6 +13,7 @@ __all__ = [
     "EnergyCoupling",
     "SupportsLocalEnergyGrad",
     "SupportsCouplingGrads",
+    "SupportsPrecision",
     "WeightAdapter",
 ]
 
@@ -64,6 +65,23 @@ class SupportsCouplingGrads(Protocol):
         eta_j: OrderParameter,
         constraints: Mapping[str, Any],
     ) -> Tuple[float, float]:
+        ...
+
+
+@runtime_checkable
+class SupportsPrecision(Protocol):
+    """Optional interface for modules exposing local stiffness/curvature.
+    
+    This enables precision-aware optimization (Gaussian Belief Propagation style),
+    where steps are scaled by the inverse curvature (uncertainty).
+    """
+
+    def curvature(self, eta: OrderParameter) -> float:
+        """Returns the local stiffness (2nd derivative) at eta.
+        
+        High curvature = High Certainty = Stiff Spring.
+        Low curvature = Low Certainty = Loose Spring (Slack).
+        """
         ...
 
 

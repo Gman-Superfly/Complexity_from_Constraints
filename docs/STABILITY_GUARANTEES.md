@@ -108,6 +108,34 @@ Then cap step size:
 
 (The 0.9 factor = `stability_cap_fraction` provides additional safety margin.)
 
+## Visual: Step Capping and Acceptance Flow
+
+```
+Compute L (Gershgorin) ────────────────┐
+                                       │
+Requested α (user) ────────┐           │
+                           └─ min ──> α_used = min(α_requested, 0.9 · 2/L)
+                                                │
+Trial step: η_{k+1} = η_k − α_used · ∇F(η_k)    │
+                                                │
+                         ΔF = F_{k+1} − F_k ≤ 0 ?
+                               │                │
+                              yes              no
+                               │                │
+                         ACCEPT step      BACKTRACK/REDUCE α_used
+                                             (and optionally warn via margin)
+```
+
+Contraction margin gauge (safety budget):
+
+```
+margin = (2/L) − α_used
+
+0                                      (2/L)
+|███████████░░░░░░░░░░░░░░░░░|  healthy
+ ^ spent (α_used)
+```
+
 ---
 
 ## SmallGain Theorem (Advanced)

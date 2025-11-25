@@ -53,6 +53,18 @@ For small enough α, the linear term dominates and energy decreases. Any violati
 - Misconfigured coupling (incorrect weights, conflicting constraints)
 - Floating-point accumulation errors
 
+### Visual: ΔF per Step — Deterministic vs With Orthogonal Noise
+
+```
+Deterministic gradient descent (assertion ON):
+t:   0 1 2 3 4 5 6 7 8
+ΔF:  ─\__\__\__\__\__\__\__     (never positive)
+
+With orthogonal noise (assertion auto-skipped):
+t:   0 1 2 3 4 5 6 7 8
+ΔF:  ─\_/\__\_/__\_/__\_        (occasional tiny positives from curvature)
+```
+
 ## Auto‑skip conditions
 
 The assertion is automatically skipped when it doesn't conceptually apply:
